@@ -1,0 +1,47 @@
+# Xcode
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+DerivedData/
+*.xcarchive
+*.ipa
+
+# Build
+build/
+*.app
+*.dSYM.zip
+*.dSYM
+
+# Dependencies
+Pods/
+Carthage/
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# CocoaPods
+Podfile.lock
+
+# Fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/**/*.png
+fastlane/test_output
+
+# Code Injection
+iOSInjectionProject/
+
+# macOS
+.DS_Store
+*.swp
+*~
+
+# IDE
+.idea/
+*.xcuserdatad
+
+# Secrets (never commit these)
+*.p12
+*.mobileprovision
+ExportOptions.plist

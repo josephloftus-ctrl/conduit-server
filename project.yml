@@ -1,0 +1,32 @@
+name: Conduit
+options:
+  bundleIdPrefix: com.josephburton
+  deploymentTarget:
+    iOS: "26.0"
+  xcodeVersion: "26.0"
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD: false
+
+targets:
+  Conduit:
+    type: application
+    platform: iOS
+    sources:
+      - Conduit
+    resources:
+      - Resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.josephburton.conduit
+        INFOPLIST_FILE: Resources/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_STYLE: Manual
+        DEVELOPMENT_TEAM: ""
+        CODE_SIGN_IDENTITY: "Apple Development"
+        PROVISIONING_PROFILE_SPECIFIER: ""
+    entitlements:
+      path: Resources/Conduit.entitlements
