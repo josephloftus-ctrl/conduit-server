@@ -10,7 +10,7 @@ final class ConnectionManager {
     private(set) var currentCwd: String?
     private(set) var streamingContent: String = ""
     private(set) var isStreaming: Bool = false
-    private(set) var pendingPermission: PendingPermission?
+    var pendingPermission: PendingPermission?
     private(set) var errorMessage: String?
     private(set) var isReconnecting: Bool = false
 
