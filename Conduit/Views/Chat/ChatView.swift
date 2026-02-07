@@ -167,7 +167,14 @@ struct ChatView: View {
         server.messages.append(userMessage)
 
         // Send to server
-        connectionManager.sendMessage(content)
+        if server.type == .claudeAPI {
+            let history = server.messages.dropLast().map { msg in
+                ClaudeAPIService.APIMessage(role: msg.role.rawValue, content: msg.content)
+            }
+            connectionManager.sendMessage(content, conversationHistory: Array(history))
+        } else {
+            connectionManager.sendMessage(content)
+        }
 
         // Clear input
         inputText = ""

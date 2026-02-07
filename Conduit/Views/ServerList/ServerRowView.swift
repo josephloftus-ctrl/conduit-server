@@ -10,8 +10,16 @@ struct ServerRowView: View {
                 .frame(width: 12, height: 12)
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(server.name)
-                    .font(.headline)
+                HStack(spacing: 6) {
+                    Text(server.name)
+                        .font(.headline)
+
+                    if server.type == .claudeAPI {
+                        Image(systemName: "brain")
+                            .foregroundStyle(.purple)
+                            .font(.caption)
+                    }
+                }
 
                 if let lastMessage = server.messages.last {
                     Text(lastMessage.content)

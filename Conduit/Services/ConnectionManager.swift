@@ -5,6 +5,7 @@ import SwiftData
 @Observable
 final class ConnectionManager {
     let webSocket = WebSocketService()
+    let claudeAPI = ClaudeAPIService()
 
     private(set) var currentServer: Server?
     private(set) var currentCwd: String?
@@ -15,7 +16,18 @@ final class ConnectionManager {
     private(set) var isReconnecting: Bool = false
 
     var connectionState: WebSocketService.State {
-        webSocket.state
+        guard let server = currentServer else { return .disconnected }
+        switch server.type {
+        case .websocket:
+            return webSocket.state
+        case .claudeAPI:
+            switch claudeAPI.state {
+            case .disconnected: return .disconnected
+            case .ready: return .ready
+            case .streaming: return .ready
+            case .failed(let msg): return .failed(msg)
+            }
+        }
     }
 
     var onMessageComplete: ((String) -> Void)?
@@ -27,10 +39,11 @@ final class ConnectionManager {
     }
 
     init() {
-        setupHandlers()
+        setupWebSocketHandlers()
+        setupClaudeAPIHandlers()
     }
 
-    private func setupHandlers() {
+    private func setupWebSocketHandlers() {
         webSocket.onMessage = { [weak self] message in
             self?.handleServerMessage(message)
         }
@@ -48,16 +61,50 @@ final class ConnectionManager {
         }
     }
 
+    private func setupClaudeAPIHandlers() {
+        claudeAPI.onChunk = { [weak self] text in
+            self?.streamingContent += text
+        }
+
+        claudeAPI.onComplete = { [weak self] fullText in
+            self?.isStreaming = false
+            self?.onMessageComplete?(fullText)
+            self?.streamingContent = ""
+        }
+
+        claudeAPI.onError = { [weak self] error in
+            self?.isStreaming = false
+            self?.errorMessage = error
+            self?.streamingContent = ""
+        }
+    }
+
     func connect(to server: Server) {
         currentServer = server
         currentCwd = server.defaultCwd
         errorMessage = nil
-        webSocket.resetRetryCount()
-        webSocket.connect(to: server.url, token: server.token)
+
+        switch server.type {
+        case .websocket:
+            webSocket.resetRetryCount()
+            webSocket.connect(to: server.url, token: server.token)
+        case .claudeAPI:
+            guard let apiKey = server.token, !apiKey.isEmpty else {
+                errorMessage = "API key is required"
+                return
+            }
+            claudeAPI.configure(apiKey: apiKey, model: server.model ?? "claude-sonnet-4-5-20250929")
+        }
     }
 
     func disconnect() {
-        webSocket.disconnect()
+        guard let server = currentServer else { return }
+        switch server.type {
+        case .websocket:
+            webSocket.disconnect()
+        case .claudeAPI:
+            claudeAPI.disconnect()
+        }
         currentServer = nil
         currentCwd = nil
         errorMessage = nil
@@ -67,19 +114,41 @@ final class ConnectionManager {
     func retry() {
         guard let server = currentServer else { return }
         errorMessage = nil
-        webSocket.resetRetryCount()
-        webSocket.connect(to: server.url, token: server.token)
+
+        switch server.type {
+        case .websocket:
+            webSocket.resetRetryCount()
+            webSocket.connect(to: server.url, token: server.token)
+        case .claudeAPI:
+            guard let apiKey = server.token, !apiKey.isEmpty else {
+                errorMessage = "API key is required"
+                return
+            }
+            claudeAPI.configure(apiKey: apiKey, model: server.model ?? "claude-sonnet-4-5-20250929")
+        }
     }
 
-    func sendMessage(_ content: String) {
+    func sendMessage(_ content: String, conversationHistory: [ClaudeAPIService.APIMessage] = []) {
         streamingContent = ""
         isStreaming = true
-        webSocket.send(.message(content: content, cwd: currentCwd))
+
+        guard let server = currentServer else { return }
+
+        switch server.type {
+        case .websocket:
+            webSocket.send(.message(content: content, cwd: currentCwd))
+        case .claudeAPI:
+            var messages = conversationHistory
+            messages.append(ClaudeAPIService.APIMessage(role: "user", content: content))
+            claudeAPI.sendMessage(messages: messages)
+        }
     }
 
     func setCwd(_ cwd: String) {
         currentCwd = cwd
-        webSocket.send(.setCwd(cwd: cwd))
+        if currentServer?.type == .websocket {
+            webSocket.send(.setCwd(cwd: cwd))
+        }
     }
 
     func respondToPermission(granted: Bool) {

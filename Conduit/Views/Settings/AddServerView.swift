@@ -6,13 +6,26 @@ struct AddServerView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var name = ""
+    @State private var selectedType: ServerType = .websocket
+
+    // WebSocket fields
     @State private var url = ""
     @State private var token = ""
     @State private var defaultCwd = ""
     @State private var yoloMode = false
 
+    // Claude API fields
+    @State private var apiKey = ""
+    @State private var selectedModel = "claude-sonnet-4-5-20250929"
+
     @State private var isConnecting = false
     @State private var errorMessage: String?
+
+    private static let claudeModels: [(id: String, label: String)] = [
+        ("claude-sonnet-4-5-20250929", "Sonnet 4.5"),
+        ("claude-opus-4-6", "Opus 4.6"),
+        ("claude-haiku-4-5-20251001", "Haiku 4.5"),
+    ]
 
     var body: some View {
         NavigationStack {
@@ -21,33 +34,59 @@ struct AddServerView: View {
                     TextField("Name", text: $name)
                         .textContentType(.name)
 
-                    TextField("URL", text: $url)
-                        .textContentType(.URL)
-                        .keyboardType(.URL)
-                        .autocapitalization(.none)
-                        .autocorrectionDisabled()
+                    Picker("Type", selection: $selectedType) {
+                        Text("WebSocket").tag(ServerType.websocket)
+                        Text("Claude API").tag(ServerType.claudeAPI)
+                    }
+                    .pickerStyle(.segmented)
                 }
 
-                Section {
-                    SecureField("Token (optional)", text: $token)
-                        .autocapitalization(.none)
-                        .autocorrectionDisabled()
-                } footer: {
-                    Text("Authentication token if your server requires it")
-                }
+                if selectedType == .websocket {
+                    Section {
+                        TextField("URL", text: $url)
+                            .textContentType(.URL)
+                            .keyboardType(.URL)
+                            .autocapitalization(.none)
+                            .autocorrectionDisabled()
+                    }
 
-                Section {
-                    TextField("Default directory (optional)", text: $defaultCwd)
-                        .autocapitalization(.none)
-                        .autocorrectionDisabled()
-                } footer: {
-                    Text("Working directory for commands, e.g. /home/user/projects")
-                }
+                    Section {
+                        SecureField("Token (optional)", text: $token)
+                            .autocapitalization(.none)
+                            .autocorrectionDisabled()
+                    } footer: {
+                        Text("Authentication token if your server requires it")
+                    }
 
-                Section {
-                    Toggle("YOLO Mode", isOn: $yoloMode)
-                } footer: {
-                    Text("Auto-approve all permission requests. Use with caution.")
+                    Section {
+                        TextField("Default directory (optional)", text: $defaultCwd)
+                            .autocapitalization(.none)
+                            .autocorrectionDisabled()
+                    } footer: {
+                        Text("Working directory for commands, e.g. /home/user/projects")
+                    }
+
+                    Section {
+                        Toggle("YOLO Mode", isOn: $yoloMode)
+                    } footer: {
+                        Text("Auto-approve all permission requests. Use with caution.")
+                    }
+                } else {
+                    Section {
+                        SecureField("API Key", text: $apiKey)
+                            .autocapitalization(.none)
+                            .autocorrectionDisabled()
+                    } footer: {
+                        Text("Your Anthropic API key")
+                    }
+
+                    Section {
+                        Picker("Model", selection: $selectedModel) {
+                            ForEach(Self.claudeModels, id: \.id) { model in
+                                Text(model.label).tag(model.id)
+                            }
+                        }
+                    }
                 }
 
                 if let error = errorMessage {
@@ -77,19 +116,37 @@ struct AddServerView: View {
     }
 
     private var isValid: Bool {
-        !name.trimmingCharacters(in: .whitespaces).isEmpty &&
-        !url.trimmingCharacters(in: .whitespaces).isEmpty &&
-        (url.hasPrefix("ws://") || url.hasPrefix("wss://"))
+        let hasName = !name.trimmingCharacters(in: .whitespaces).isEmpty
+        switch selectedType {
+        case .websocket:
+            let trimmedURL = url.trimmingCharacters(in: .whitespaces)
+            return hasName && !trimmedURL.isEmpty && (trimmedURL.hasPrefix("ws://") || trimmedURL.hasPrefix("wss://"))
+        case .claudeAPI:
+            return hasName && !apiKey.trimmingCharacters(in: .whitespaces).isEmpty
+        }
     }
 
     private func saveServer() {
-        let server = Server(
-            name: name.trimmingCharacters(in: .whitespaces),
-            url: url.trimmingCharacters(in: .whitespaces),
-            token: token.isEmpty ? nil : token,
-            defaultCwd: defaultCwd.isEmpty ? nil : defaultCwd,
-            yoloMode: yoloMode
-        )
+        let server: Server
+        switch selectedType {
+        case .websocket:
+            server = Server(
+                name: name.trimmingCharacters(in: .whitespaces),
+                url: url.trimmingCharacters(in: .whitespaces),
+                token: token.isEmpty ? nil : token,
+                defaultCwd: defaultCwd.isEmpty ? nil : defaultCwd,
+                yoloMode: yoloMode,
+                type: .websocket
+            )
+        case .claudeAPI:
+            server = Server(
+                name: name.trimmingCharacters(in: .whitespaces),
+                url: "",
+                token: apiKey.trimmingCharacters(in: .whitespaces),
+                type: .claudeAPI,
+                model: selectedModel
+            )
+        }
 
         modelContext.insert(server)
         dismiss()

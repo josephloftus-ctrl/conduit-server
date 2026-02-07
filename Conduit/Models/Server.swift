@@ -1,6 +1,11 @@
 import Foundation
 import SwiftData
 
+enum ServerType: String, Codable, CaseIterable {
+    case websocket
+    case claudeAPI
+}
+
 @Model
 final class Server {
     var id: UUID
@@ -10,9 +15,16 @@ final class Server {
     var defaultCwd: String?
     var yoloMode: Bool
     var lastConnected: Date?
+    var serverType: String = ServerType.websocket.rawValue
+    var model: String?
 
     @Relationship(deleteRule: .cascade, inverse: \Message.server)
     var messages: [Message] = []
+
+    var type: ServerType {
+        get { ServerType(rawValue: serverType) ?? .websocket }
+        set { serverType = newValue.rawValue }
+    }
 
     init(
         id: UUID = UUID(),
@@ -20,7 +32,9 @@ final class Server {
         url: String,
         token: String? = nil,
         defaultCwd: String? = nil,
-        yoloMode: Bool = false
+        yoloMode: Bool = false,
+        type: ServerType = .websocket,
+        model: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -28,5 +42,7 @@ final class Server {
         self.token = token
         self.defaultCwd = defaultCwd
         self.yoloMode = yoloMode
+        self.serverType = type.rawValue
+        self.model = model
     }
 }
