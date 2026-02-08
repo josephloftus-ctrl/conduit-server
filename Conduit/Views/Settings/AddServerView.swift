@@ -109,6 +109,7 @@ struct AddServerView: View {
                     Button("Save") {
                         saveServer()
                     }
+                    .buttonStyle(.glassProminent)
                     .disabled(!isValid || isConnecting)
                 }
             }

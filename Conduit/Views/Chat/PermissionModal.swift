@@ -8,94 +8,92 @@ struct PermissionModal: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 24) {
-                // Icon
-                Image(systemName: iconName)
-                    .font(.system(size: 48))
-                    .foregroundStyle(.orange)
+            GlassEffectContainer {
+                VStack(spacing: 24) {
+                    // Icon with glass backing
+                    Image(systemName: iconName)
+                        .font(.system(size: 32))
+                        .foregroundStyle(.orange)
+                        .frame(width: 64, height: 64)
+                        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 16))
 
-                // Title
-                Text(title)
-                    .font(.title2.bold())
+                    // Title
+                    Text(title)
+                        .font(.title2.bold())
 
-                // Detail
-                if let path = permission.detail.path {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("File:")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text(path)
-                            .font(.system(.body, design: .monospaced))
-                            .padding(12)
-                            .background(Color(.systemGray6))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-
-                if let diff = permission.detail.diff {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Changes:")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-
-                        ScrollView {
-                            Text(diff)
-                                .font(.system(.caption, design: .monospaced))
+                    // Detail
+                    if let path = permission.detail.path {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("File:")
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.secondary)
+                            Text(path)
+                                .font(.system(.body, design: .monospaced))
+                                .padding(12)
                                 .frame(maxWidth: .infinity, alignment: .leading)
+                                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 10))
                         }
-                        .frame(maxHeight: 200)
-                        .padding(12)
-                        .background(Color(.systemGray6))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                }
 
-                if let command = permission.detail.command {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Command:")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text(command)
-                            .font(.system(.body, design: .monospaced))
+                    if let diff = permission.detail.diff {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Changes:")
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.secondary)
+
+                            ScrollView {
+                                Text(diff)
+                                    .font(.system(.caption, design: .monospaced))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .frame(maxHeight: 200)
                             .padding(12)
-                            .background(Color(.systemGray6))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 10))
+                        }
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    if let command = permission.detail.command {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Command:")
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.secondary)
+                            Text(command)
+                                .font(.system(.body, design: .monospaced))
+                                .padding(12)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 10))
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+
+                    Spacer()
+
+                    // Buttons
+                    HStack(spacing: 16) {
+                        Button(action: {
+                            onResponse(false)
+                            dismiss()
+                        }) {
+                            Text("Reject")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.glass)
+                        .controlSize(.large)
+
+                        Button(action: {
+                            onResponse(true)
+                            dismiss()
+                        }) {
+                            Text("Approve")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.glassProminent)
+                        .controlSize(.large)
+                    }
                 }
-
-                Spacer()
-
-                // Buttons
-                HStack(spacing: 16) {
-                    Button(action: {
-                        onResponse(false)
-                        dismiss()
-                    }) {
-                        Text("Reject")
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color(.systemGray5))
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                    }
-                    .buttonStyle(.plain)
-
-                    Button(action: {
-                        onResponse(true)
-                        dismiss()
-                    }) {
-                        Text("Approve")
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(.blue)
-                            .foregroundStyle(.white)
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                    }
-                    .buttonStyle(.plain)
-                }
+                .padding(24)
             }
-            .padding(24)
             .navigationBarTitleDisplayMode(.inline)
             .interactiveDismissDisabled()
         }

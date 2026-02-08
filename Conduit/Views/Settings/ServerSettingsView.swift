@@ -80,6 +80,7 @@ struct ServerSettingsView: View {
                     Button("Clear Message History", role: .destructive) {
                         server.messages.removeAll()
                     }
+                    .buttonStyle(.glass)
                 }
             }
             .navigationTitle("Settings")

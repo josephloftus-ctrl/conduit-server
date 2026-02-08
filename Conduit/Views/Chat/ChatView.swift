@@ -15,112 +15,67 @@ struct ChatView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Connection status banner
-            if let error = connectionManager.errorMessage {
-                HStack {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.white)
-                    Text(error)
-                        .font(.subheadline)
-                        .foregroundStyle(.white)
-                    Spacer()
-                    Button("Retry") {
-                        connectionManager.retry()
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.white)
-                }
-                .padding()
-                .background(.red)
-            } else if connectionManager.isReconnecting {
-                HStack {
-                    ProgressView()
-                        .tint(.white)
-                    Text("Reconnecting...")
-                        .font(.subheadline)
-                        .foregroundStyle(.white)
-                }
-                .padding(.vertical, 8)
-                .frame(maxWidth: .infinity)
-                .background(.orange)
-            } else if connectionManager.connectionState == .connecting {
-                HStack {
-                    ProgressView()
-                        .tint(.white)
-                    Text("Connecting...")
-                        .font(.subheadline)
-                        .foregroundStyle(.white)
-                }
-                .padding(.vertical, 8)
-                .frame(maxWidth: .infinity)
-                .background(.blue)
-            }
+        GlassEffectContainer {
+            VStack(spacing: 0) {
+                // Connection status banner
+                statusBanner
 
-            // Messages
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: 12) {
-                        ForEach(server.messages) { message in
-                            MessageBubble(message: message)
-                                .id(message.id)
+                // Messages
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(spacing: 12) {
+                            ForEach(server.messages) { message in
+                                MessageBubble(message: message)
+                                    .id(message.id)
+                            }
+
+                            // Streaming content
+                            if connectionManager.isStreaming && !connectionManager.streamingContent.isEmpty {
+                                MessageBubble(
+                                    content: connectionManager.streamingContent,
+                                    role: .assistant,
+                                    isStreaming: true
+                                )
+                                .id("streaming")
+                            }
                         }
-
-                        // Streaming content
-                        if connectionManager.isStreaming && !connectionManager.streamingContent.isEmpty {
-                            MessageBubble(
-                                content: connectionManager.streamingContent,
-                                role: .assistant,
-                                isStreaming: true
-                            )
-                            .id("streaming")
+                        .padding()
+                    }
+                    .onChange(of: server.messages.count) {
+                        if let lastMessage = server.messages.last {
+                            withAnimation {
+                                proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                            }
                         }
                     }
-                    .padding()
-                }
-                .onChange(of: server.messages.count) {
-                    if let lastMessage = server.messages.last {
+                    .onChange(of: connectionManager.streamingContent) {
                         withAnimation {
-                            proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                            proxy.scrollTo("streaming", anchor: .bottom)
                         }
                     }
                 }
-                .onChange(of: connectionManager.streamingContent) {
-                    withAnimation {
-                        proxy.scrollTo("streaming", anchor: .bottom)
-                    }
-                }
+
+                // Input bar
+                inputBar
             }
-
-            Divider()
-
-            // Input
-            HStack(spacing: 12) {
-                TextField("Message", text: $inputText, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .lineLimit(1...5)
-
-                Button(action: sendMessage) {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.title2)
-                }
-                .disabled(inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !isConnected)
-            }
-            .padding()
-            .background(.bar)
         }
         .navigationTitle(server.name)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackgroundVisibility(.visible, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
-                HStack(spacing: 16) {
-                    Circle()
-                        .fill(isConnected ? .green : .gray)
-                        .frame(width: 8, height: 8)
+                HStack(spacing: 12) {
+                    // Status indicator
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(isConnected ? .green : .gray)
+                            .frame(width: 7, height: 7)
 
-                    if server.yoloMode {
-                        Image(systemName: "bolt.fill")
-                            .foregroundStyle(.yellow)
+                        if server.yoloMode {
+                            Image(systemName: "bolt.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.yellow)
+                        }
                     }
 
                     Button(action: { showingSettings = true }) {
@@ -147,6 +102,69 @@ struct ChatView: View {
         .onDisappear {
             connectionManager.disconnect()
         }
+    }
+
+    @ViewBuilder
+    private var statusBanner: some View {
+        if let error = connectionManager.errorMessage {
+            HStack {
+                Image(systemName: "exclamationmark.triangle.fill")
+                Text(error)
+                    .font(.subheadline)
+                Spacer()
+                Button("Retry") {
+                    connectionManager.retry()
+                }
+                .buttonStyle(.glass)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .glassEffect(.regular.tint(.red), in: RoundedRectangle(cornerRadius: 12))
+            .padding(.horizontal)
+            .padding(.top, 4)
+        } else if connectionManager.isReconnecting {
+            HStack(spacing: 8) {
+                ProgressView()
+                Text("Reconnecting...")
+                    .font(.subheadline)
+            }
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity)
+            .glassEffect(.regular.tint(.orange), in: RoundedRectangle(cornerRadius: 12))
+            .padding(.horizontal)
+            .padding(.top, 4)
+        } else if connectionManager.connectionState == .connecting {
+            HStack(spacing: 8) {
+                ProgressView()
+                Text("Connecting...")
+                    .font(.subheadline)
+            }
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity)
+            .glassEffect(.regular.tint(.blue), in: RoundedRectangle(cornerRadius: 12))
+            .padding(.horizontal)
+            .padding(.top, 4)
+        }
+    }
+
+    private var inputBar: some View {
+        HStack(spacing: 12) {
+            TextField("Message", text: $inputText, axis: .vertical)
+                .textFieldStyle(.plain)
+                .lineLimit(1...5)
+
+            Button(action: sendMessage) {
+                Image(systemName: "arrow.up.circle.fill")
+                    .font(.title2)
+            }
+            .disabled(inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !isConnected)
+            .glassEffect(.regular.interactive(), in: Circle())
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 22))
+        .padding(.horizontal)
+        .padding(.bottom, 8)
     }
 
     private func setupConnectionManager() {
