@@ -33,7 +33,7 @@ struct MessageBubble: View {
                     formattedContent
                         .padding(.horizontal, 16)
                         .padding(.vertical, 12)
-                        .background(.blue)
+                        .background(Color.conduitUserBubble)
                         .foregroundStyle(.white)
                         .clipShape(RoundedRectangle(cornerRadius: 18))
                 }
@@ -74,7 +74,7 @@ struct MessageBubble: View {
             }
 
             Text("Streaming")
-                .font(.caption2)
+                .font(.system(.caption2, design: .rounded).weight(.medium))
                 .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 10)

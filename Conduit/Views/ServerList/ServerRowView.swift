@@ -8,13 +8,13 @@ struct ServerRowView: View {
             // Server type icon with glass backing
             Image(systemName: server.type == .claudeAPI ? "brain" : "antenna.radiowaves.left.and.right")
                 .font(.title3)
-                .foregroundStyle(server.type == .claudeAPI ? .purple : .blue)
+                .foregroundStyle(.conduitAccent)
                 .frame(width: 40, height: 40)
                 .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 10))
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(server.name)
-                    .font(.headline)
+                    .font(.system(.headline, design: .rounded))
 
                 if server.type == .claudeAPI, let model = server.model {
                     Text(modelDisplayName(model))
@@ -39,7 +39,7 @@ struct ServerRowView: View {
                 if server.yoloMode {
                     Image(systemName: "bolt.fill")
                         .font(.caption2)
-                        .foregroundStyle(.yellow)
+                        .foregroundStyle(.conduitWarning)
                 }
 
                 Circle()
@@ -47,7 +47,7 @@ struct ServerRowView: View {
                     .frame(width: 8, height: 8)
 
                 Text(statusLabel)
-                    .font(.caption2)
+                    .font(.system(.caption2, design: .rounded).weight(.medium))
                     .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 10)
@@ -59,10 +59,10 @@ struct ServerRowView: View {
 
     private var statusColor: Color {
         guard let lastConnected = server.lastConnected else {
-            return .gray
+            return .conduitInactive
         }
         let fiveMinutesAgo = Date().addingTimeInterval(-5 * 60)
-        return lastConnected > fiveMinutesAgo ? .green : .gray
+        return lastConnected > fiveMinutesAgo ? .conduitSuccess : .conduitInactive
     }
 
     private var statusLabel: String {

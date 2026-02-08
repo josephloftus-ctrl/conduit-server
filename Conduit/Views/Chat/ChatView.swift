@@ -59,6 +59,7 @@ struct ChatView: View {
                 inputBar
             }
         }
+        .conduitBackground()
         .navigationTitle(server.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackgroundVisibility(.visible, for: .navigationBar)
@@ -68,13 +69,13 @@ struct ChatView: View {
                     // Status indicator
                     HStack(spacing: 5) {
                         Circle()
-                            .fill(isConnected ? .green : .gray)
+                            .fill(isConnected ? .conduitSuccess : .conduitInactive)
                             .frame(width: 7, height: 7)
 
                         if server.yoloMode {
                             Image(systemName: "bolt.fill")
                                 .font(.caption2)
-                                .foregroundStyle(.yellow)
+                                .foregroundStyle(.conduitWarning)
                         }
                     }
 
@@ -110,7 +111,7 @@ struct ChatView: View {
             HStack {
                 Image(systemName: "exclamationmark.triangle.fill")
                 Text(error)
-                    .font(.subheadline)
+                    .font(.system(.subheadline, design: .rounded).weight(.medium))
                 Spacer()
                 Button("Retry") {
                     connectionManager.retry()
@@ -119,29 +120,29 @@ struct ChatView: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
-            .glassEffect(.regular.tint(.red), in: RoundedRectangle(cornerRadius: 12))
+            .glassEffect(.regular.tint(.conduitError), in: RoundedRectangle(cornerRadius: 12))
             .padding(.horizontal)
             .padding(.top, 4)
         } else if connectionManager.isReconnecting {
             HStack(spacing: 8) {
                 ProgressView()
                 Text("Reconnecting...")
-                    .font(.subheadline)
+                    .font(.system(.subheadline, design: .rounded).weight(.medium))
             }
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity)
-            .glassEffect(.regular.tint(.orange), in: RoundedRectangle(cornerRadius: 12))
+            .glassEffect(.regular.tint(.conduitWarning), in: RoundedRectangle(cornerRadius: 12))
             .padding(.horizontal)
             .padding(.top, 4)
         } else if connectionManager.connectionState == .connecting {
             HStack(spacing: 8) {
                 ProgressView()
                 Text("Connecting...")
-                    .font(.subheadline)
+                    .font(.system(.subheadline, design: .rounded).weight(.medium))
             }
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity)
-            .glassEffect(.regular.tint(.blue), in: RoundedRectangle(cornerRadius: 12))
+            .glassEffect(.regular.tint(.conduitAccent), in: RoundedRectangle(cornerRadius: 12))
             .padding(.horizontal)
             .padding(.top, 4)
         }

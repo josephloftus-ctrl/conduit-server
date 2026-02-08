@@ -13,6 +13,18 @@ struct ServerListView: View {
             GlassEffectContainer {
                 ScrollView {
                     LazyVStack(spacing: 12) {
+                        // Branded header
+                        HStack(spacing: 8) {
+                            Image(systemName: "bolt.horizontal.circle.fill")
+                                .font(.system(size: 28))
+                                .foregroundStyle(.conduitAccent)
+                            Text("Conduit")
+                                .font(.system(size: 28, weight: .bold, design: .rounded))
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 4)
+                        .padding(.bottom, 4)
+
                         if servers.isEmpty {
                             emptyState
                         } else {
@@ -36,17 +48,22 @@ struct ServerListView: View {
                     .padding(.top, 8)
                 }
             }
+            .conduitBackground()
             .navigationTitle("Conduit")
-            .navigationDestination(for: Server.self) { server in
-                ChatView(server: server)
-            }
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Color.clear.frame(width: 0, height: 0)
+                }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button(action: { showingAddServer = true }) {
                         Image(systemName: "plus")
                     }
                     .buttonStyle(.glass)
                 }
+            }
+            .navigationDestination(for: Server.self) { server in
+                ChatView(server: server)
             }
             .sheet(isPresented: $showingAddServer) {
                 AddServerView()
@@ -67,10 +84,10 @@ struct ServerListView: View {
 
             VStack(spacing: 8) {
                 Text("No Servers")
-                    .font(.title2.bold())
+                    .font(.system(size: 22, weight: .bold, design: .rounded))
 
                 Text("Add a server to start chatting with AI")
-                    .font(.subheadline)
+                    .font(.system(.subheadline, design: .rounded))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }

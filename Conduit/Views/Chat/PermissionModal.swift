@@ -13,19 +13,19 @@ struct PermissionModal: View {
                     // Icon with glass backing
                     Image(systemName: iconName)
                         .font(.system(size: 32))
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(.conduitAccent)
                         .frame(width: 64, height: 64)
                         .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 16))
 
                     // Title
                     Text(title)
-                        .font(.title2.bold())
+                        .font(.system(size: 22, weight: .bold, design: .rounded))
 
                     // Detail
                     if let path = permission.detail.path {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("File:")
-                                .font(.caption.weight(.medium))
+                                .font(.system(.caption, design: .rounded).weight(.medium))
                                 .foregroundStyle(.secondary)
                             Text(path)
                                 .font(.system(.body, design: .monospaced))
@@ -39,7 +39,7 @@ struct PermissionModal: View {
                     if let diff = permission.detail.diff {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Changes:")
-                                .font(.caption.weight(.medium))
+                                .font(.system(.caption, design: .rounded).weight(.medium))
                                 .foregroundStyle(.secondary)
 
                             ScrollView {
@@ -56,7 +56,7 @@ struct PermissionModal: View {
                     if let command = permission.detail.command {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Command:")
-                                .font(.caption.weight(.medium))
+                                .font(.system(.caption, design: .rounded).weight(.medium))
                                 .foregroundStyle(.secondary)
                             Text(command)
                                 .font(.system(.body, design: .monospaced))
