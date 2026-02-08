@@ -98,7 +98,9 @@ struct ChatView: View {
         }
         .onAppear {
             setupConnectionManager()
-            connectionManager.connect(to: server)
+            if connectionManager.connectionState == .disconnected {
+                connectionManager.connect(to: server)
+            }
         }
         .onDisappear {
             connectionManager.disconnect()

@@ -50,6 +50,10 @@ final class WebSocketService {
             return
         }
 
+        // Tear down any existing connection before opening a new one
+        webSocketTask?.cancel(with: .normalClosure, reason: nil)
+        webSocketTask = nil
+
         self.url = url
         self.token = token
 
