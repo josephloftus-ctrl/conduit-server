@@ -92,7 +92,7 @@ struct AddServerView: View {
                 if let error = errorMessage {
                     Section {
                         Text(error)
-                            .foregroundStyle(.conduitError)
+                            .foregroundStyle(Color.conduitError)
                     }
                 }
             }

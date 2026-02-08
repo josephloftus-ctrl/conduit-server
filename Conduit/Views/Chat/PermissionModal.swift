@@ -13,7 +13,7 @@ struct PermissionModal: View {
                     // Icon with glass backing
                     Image(systemName: iconName)
                         .font(.system(size: 32))
-                        .foregroundStyle(.conduitAccent)
+                        .foregroundStyle(Color.conduitAccent)
                         .frame(width: 64, height: 64)
                         .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 16))
 

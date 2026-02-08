@@ -8,7 +8,7 @@ struct ServerRowView: View {
             // Server type icon with glass backing
             Image(systemName: server.type == .claudeAPI ? "brain" : "antenna.radiowaves.left.and.right")
                 .font(.title3)
-                .foregroundStyle(.conduitAccent)
+                .foregroundStyle(Color.conduitAccent)
                 .frame(width: 40, height: 40)
                 .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 10))
 
@@ -39,7 +39,7 @@ struct ServerRowView: View {
                 if server.yoloMode {
                     Image(systemName: "bolt.fill")
                         .font(.caption2)
-                        .foregroundStyle(.conduitWarning)
+                        .foregroundStyle(Color.conduitWarning)
                 }
 
                 Circle()

@@ -69,13 +69,13 @@ struct ChatView: View {
                     // Status indicator
                     HStack(spacing: 5) {
                         Circle()
-                            .fill(isConnected ? .conduitSuccess : .conduitInactive)
+                            .fill(isConnected ? Color.conduitSuccess : Color.conduitInactive)
                             .frame(width: 7, height: 7)
 
                         if server.yoloMode {
                             Image(systemName: "bolt.fill")
                                 .font(.caption2)
-                                .foregroundStyle(.conduitWarning)
+                                .foregroundStyle(Color.conduitWarning)
                         }
                     }
 
@@ -120,7 +120,7 @@ struct ChatView: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
-            .glassEffect(.regular.tint(.conduitError), in: RoundedRectangle(cornerRadius: 12))
+            .glassEffect(.regular.tint(Color.conduitError), in: RoundedRectangle(cornerRadius: 12))
             .padding(.horizontal)
             .padding(.top, 4)
         } else if connectionManager.isReconnecting {
@@ -131,7 +131,7 @@ struct ChatView: View {
             }
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity)
-            .glassEffect(.regular.tint(.conduitWarning), in: RoundedRectangle(cornerRadius: 12))
+            .glassEffect(.regular.tint(Color.conduitWarning), in: RoundedRectangle(cornerRadius: 12))
             .padding(.horizontal)
             .padding(.top, 4)
         } else if connectionManager.connectionState == .connecting {
@@ -142,7 +142,7 @@ struct ChatView: View {
             }
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity)
-            .glassEffect(.regular.tint(.conduitAccent), in: RoundedRectangle(cornerRadius: 12))
+            .glassEffect(.regular.tint(Color.conduitAccent), in: RoundedRectangle(cornerRadius: 12))
             .padding(.horizontal)
             .padding(.top, 4)
         }

@@ -17,7 +17,7 @@ struct ServerListView: View {
                         HStack(spacing: 8) {
                             Image(systemName: "bolt.horizontal.circle.fill")
                                 .font(.system(size: 28))
-                                .foregroundStyle(.conduitAccent)
+                                .foregroundStyle(Color.conduitAccent)
                             Text("Conduit")
                                 .font(.system(size: 28, weight: .bold, design: .rounded))
                         }

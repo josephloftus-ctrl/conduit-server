@@ -6,7 +6,7 @@ struct ConduitApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .tint(.conduitAccent)
+                .tint(Color.conduitAccent)
         }
         .modelContainer(for: [Server.self, Message.self])
     }
