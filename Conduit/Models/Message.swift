@@ -7,20 +7,20 @@ final class Message {
     var role: MessageRole
     var content: String
     var timestamp: Date
-    var server: Server?
+    var conversation: Conversation?
 
     init(
         id: UUID = UUID(),
         role: MessageRole,
         content: String,
         timestamp: Date = Date(),
-        server: Server? = nil
+        conversation: Conversation? = nil
     ) {
         self.id = id
         self.role = role
         self.content = content
         self.timestamp = timestamp
-        self.server = server
+        self.conversation = conversation
     }
 }
 

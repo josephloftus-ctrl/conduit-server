@@ -20,7 +20,8 @@ struct ServerRowView: View {
                     Text(modelDisplayName(model))
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
-                } else if let lastMessage = server.messages.last {
+                } else if let lastMessage = server.activeConversation?.messages
+                    .sorted(by: { $0.timestamp > $1.timestamp }).first {
                     Text(lastMessage.content)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)

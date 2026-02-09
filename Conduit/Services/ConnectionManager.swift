@@ -6,6 +6,7 @@ import SwiftData
 final class ConnectionManager {
     let webSocket = WebSocketService()
     let claudeAPI = ClaudeAPIService()
+    let networkMonitor = NetworkMonitor()
 
     private(set) var currentServer: Server?
     private(set) var currentCwd: String?
@@ -41,6 +42,7 @@ final class ConnectionManager {
     init() {
         setupWebSocketHandlers()
         setupClaudeAPIHandlers()
+        setupNetworkMonitor()
     }
 
     private func setupWebSocketHandlers() {
@@ -76,6 +78,16 @@ final class ConnectionManager {
             self?.isStreaming = false
             self?.errorMessage = error
             self?.streamingContent = ""
+        }
+    }
+
+    private func setupNetworkMonitor() {
+        networkMonitor.onNetworkRestored = { [weak self] in
+            guard let self = self else { return }
+            // Auto-retry if connected to a server but not in ready state
+            if self.currentServer != nil && self.connectionState != .ready {
+                self.retry()
+            }
         }
     }
 
@@ -128,7 +140,7 @@ final class ConnectionManager {
         }
     }
 
-    func sendMessage(_ content: String, conversationHistory: [ClaudeAPIService.APIMessage] = []) {
+    func sendMessage(_ content: String, conversationHistory: [ClaudeAPIService.APIMessage] = [], systemPrompt: String? = nil) {
         streamingContent = ""
         isStreaming = true
 
@@ -140,8 +152,28 @@ final class ConnectionManager {
         case .claudeAPI:
             var messages = conversationHistory
             messages.append(ClaudeAPIService.APIMessage(role: "user", content: content))
-            claudeAPI.sendMessage(messages: messages)
+            claudeAPI.sendMessage(messages: messages, systemPrompt: systemPrompt)
         }
+    }
+
+    func stopGeneration() {
+        guard let server = currentServer else { return }
+
+        switch server.type {
+        case .websocket:
+            webSocket.cancelCurrentStream()
+        case .claudeAPI:
+            claudeAPI.cancelStreaming()
+        }
+
+        isStreaming = false
+
+        // Save partial content if any
+        let partial = streamingContent
+        if !partial.isEmpty {
+            onMessageComplete?(partial)
+        }
+        streamingContent = ""
     }
 
     func setCwd(_ cwd: String) {

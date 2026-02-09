@@ -8,6 +8,6 @@ struct ConduitApp: App {
             ContentView()
                 .tint(Color.conduitAccent)
         }
-        .modelContainer(for: [Server.self, Message.self])
+        .modelContainer(for: [Server.self, Conversation.self, Message.self])
     }
 }

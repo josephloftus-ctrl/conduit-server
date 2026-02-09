@@ -25,16 +25,26 @@ final class WebSocketService {
         }
     }
 
-    private static let maxRetries = 5
-    private static let retryDelay: TimeInterval = 2.0
+    // Step 1: Exponential backoff constants
+    private static let maxRetries = 8
+    private static let baseDelay: TimeInterval = 1.0
+    private static let maxDelay: TimeInterval = 30.0
+
+    // Step 2: Connection timeout
+    private static let connectionTimeout: TimeInterval = 10.0
+
+    // Step 3: Heartbeat
+    private static let pingInterval: TimeInterval = 30.0
 
     private(set) var state: State = .disconnected
     private(set) var errorMessage: String?
     private var webSocketTask: URLSessionWebSocketTask?
     private var session: URLSession
-    private var url: URL?
-    private var token: String?
+    private(set) var url: URL?
+    private(set) var token: String?
     private var retryCount = 0
+    private var timeoutTask: Task<Void, Never>?
+    private var pingTask: Task<Void, Never>?
 
     var onMessage: ((ServerMessage) -> Void)?
     var onStateChange: ((State) -> Void)?
@@ -51,6 +61,7 @@ final class WebSocketService {
         }
 
         // Tear down any existing connection before opening a new one
+        cancelTimers()
         webSocketTask?.cancel(with: .normalClosure, reason: nil)
         webSocketTask = nil
 
@@ -68,11 +79,15 @@ final class WebSocketService {
         webSocketTask = session.webSocketTask(with: request)
         webSocketTask?.resume()
 
+        // Step 2: Start connection timeout
+        startConnectionTimeout()
+
         receiveMessage()
         // State will transition to .ready when hello message is received
     }
 
     func disconnect() {
+        cancelTimers()
         webSocketTask?.cancel(with: .normalClosure, reason: nil)
         webSocketTask = nil
         state = .disconnected
@@ -93,6 +108,20 @@ final class WebSocketService {
         } catch {
             print("Encode error: \(error)")
         }
+    }
+
+    /// Cancel the current stream by disconnecting and immediately reconnecting.
+    /// WebSocket has no cancel signal, so we tear down and re-establish.
+    func cancelCurrentStream() {
+        guard let url = self.url else { return }
+        let savedToken = self.token
+
+        cancelTimers()
+        webSocketTask?.cancel(with: .normalClosure, reason: nil)
+        webSocketTask = nil
+
+        // Immediately reconnect
+        connect(to: url.absoluteString, token: savedToken)
     }
 
     private func receiveMessage() {
@@ -131,8 +160,13 @@ final class WebSocketService {
             if case .hello = message {
                 retryCount = 0  // Reset retry count on successful connection
                 errorMessage = nil
+                // Step 2: Cancel timeout on successful hello
+                timeoutTask?.cancel()
+                timeoutTask = nil
                 state = .ready
                 onStateChange?(.ready)
+                // Step 3: Start heartbeat on connection
+                startHeartbeat()
             }
 
             onMessage?(message)
@@ -142,6 +176,7 @@ final class WebSocketService {
     }
 
     private func handleDisconnect() {
+        cancelTimers()
         retryCount += 1
 
         if retryCount > Self.maxRetries {
@@ -156,13 +191,63 @@ final class WebSocketService {
         state = .reconnecting
         onStateChange?(.reconnecting)
 
-        // Auto-reconnect after delay
+        // Step 1: Exponential backoff with jitter
+        let exponentialDelay = Self.baseDelay * pow(2.0, Double(retryCount - 1))
+        let cappedDelay = min(exponentialDelay, Self.maxDelay)
+        let jitter = Double.random(in: 0...(cappedDelay * 0.3))
+        let delay = cappedDelay + jitter
+
         Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(Self.retryDelay))
+            try? await Task.sleep(for: .seconds(delay))
             guard let self = self,
                   let url = self.url else { return }
             self.connect(to: url.absoluteString, token: self.token)
         }
+    }
+
+    // MARK: - Connection Timeout (Step 2)
+
+    private func startConnectionTimeout() {
+        timeoutTask?.cancel()
+        timeoutTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(Self.connectionTimeout))
+            guard let self = self, !Task.isCancelled else { return }
+            if self.state == .connecting {
+                print("Connection timeout after \(Self.connectionTimeout)s")
+                self.webSocketTask?.cancel(with: .abnormalClosure, reason: nil)
+                self.webSocketTask = nil
+                self.handleDisconnect()
+            }
+        }
+    }
+
+    // MARK: - Heartbeat (Step 3)
+
+    private func startHeartbeat() {
+        pingTask?.cancel()
+        pingTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(Self.pingInterval))
+                guard let self = self, !Task.isCancelled else { return }
+                guard let task = self.webSocketTask else { return }
+
+                task.sendPing { error in
+                    Task { @MainActor [weak self] in
+                        if let error = error {
+                            print("Ping failed: \(error)")
+                            self?.handleDisconnect()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func cancelTimers() {
+        timeoutTask?.cancel()
+        timeoutTask = nil
+        pingTask?.cancel()
+        pingTask = nil
     }
 
     func resetRetryCount() {

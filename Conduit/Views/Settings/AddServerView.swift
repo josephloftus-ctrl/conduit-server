@@ -17,6 +17,7 @@ struct AddServerView: View {
     // Claude API fields
     @State private var apiKey = ""
     @State private var selectedModel = "claude-sonnet-4-5-20250929"
+    @State private var systemPrompt = ""
 
     @State private var isConnecting = false
     @State private var errorMessage: String?
@@ -87,6 +88,13 @@ struct AddServerView: View {
                             }
                         }
                     }
+
+                    Section {
+                        TextField("System prompt (optional)", text: $systemPrompt, axis: .vertical)
+                            .lineLimit(3...8)
+                    } footer: {
+                        Text("Instructions sent with every message to set the AI's behavior")
+                    }
                 }
 
                 if let error = errorMessage {
@@ -134,27 +142,31 @@ struct AddServerView: View {
             server = Server(
                 name: name.trimmingCharacters(in: .whitespaces),
                 url: url.trimmingCharacters(in: .whitespaces),
-                token: token.isEmpty ? nil : token,
                 defaultCwd: defaultCwd.isEmpty ? nil : defaultCwd,
                 yoloMode: yoloMode,
                 type: .websocket
             )
+            modelContext.insert(server)
+            if !token.isEmpty {
+                server.token = token
+            }
         case .claudeAPI:
             server = Server(
                 name: name.trimmingCharacters(in: .whitespaces),
                 url: "",
-                token: apiKey.trimmingCharacters(in: .whitespaces),
                 type: .claudeAPI,
-                model: selectedModel
+                model: selectedModel,
+                systemPrompt: systemPrompt.isEmpty ? nil : systemPrompt
             )
+            modelContext.insert(server)
+            server.token = apiKey.trimmingCharacters(in: .whitespaces)
         }
 
-        modelContext.insert(server)
         dismiss()
     }
 }
 
 #Preview {
     AddServerView()
-        .modelContainer(for: Server.self, inMemory: true)
+        .modelContainer(for: [Server.self, Conversation.self, Message.self], inMemory: true)
 }

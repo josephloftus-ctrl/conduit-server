@@ -47,12 +47,18 @@ final class ClaudeAPIService {
         state = .disconnected
     }
 
+    func cancelStreaming() {
+        currentTask?.cancel()
+        currentTask = nil
+        state = .ready
+    }
+
     struct APIMessage: Encodable {
         let role: String
         let content: String
     }
 
-    func sendMessage(messages: [APIMessage]) {
+    func sendMessage(messages: [APIMessage], systemPrompt: String? = nil) {
         guard let apiKey, let modelId else {
             onError?("Claude API not configured")
             return
@@ -72,12 +78,17 @@ final class ClaudeAPIService {
                 request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
 
-                let body: [String: Any] = [
+                var body: [String: Any] = [
                     "model": modelId,
                     "max_tokens": 8192,
                     "stream": true,
                     "messages": messages.map { ["role": $0.role, "content": $0.content] }
                 ]
+
+                if let systemPrompt, !systemPrompt.isEmpty {
+                    body["system"] = systemPrompt
+                }
+
                 request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
                 let (bytes, response) = try await URLSession.shared.bytes(for: request)

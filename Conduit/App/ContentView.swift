@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 
 struct ContentView: View {
     var body: some View {
@@ -8,5 +9,5 @@ struct ContentView: View {
 
 #Preview {
     ContentView()
-        .modelContainer(for: [Server.self, Message.self], inMemory: true)
+        .modelContainer(for: [Server.self, Conversation.self, Message.self], inMemory: true)
 }

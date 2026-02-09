@@ -1,10 +1,14 @@
 import SwiftUI
+import SwiftData
 
 struct ServerSettingsView: View {
     @Bindable var server: Server
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
 
     @State private var showingDeleteConfirmation = false
+    @State private var editToken: String = ""
+    @State private var editSystemPrompt: String = ""
 
     private static let claudeModels: [(id: String, label: String)] = [
         ("claude-sonnet-4-5-20250929", "Sonnet 4.5"),
@@ -32,12 +36,9 @@ struct ServerSettingsView: View {
                     }
 
                     Section("Authentication") {
-                        SecureField("Token", text: Binding(
-                            get: { server.token ?? "" },
-                            set: { server.token = $0.isEmpty ? nil : $0 }
-                        ))
-                        .autocapitalization(.none)
-                        .autocorrectionDisabled()
+                        SecureField("Token", text: $editToken)
+                            .autocapitalization(.none)
+                            .autocorrectionDisabled()
                     }
 
                     Section("Working Directory") {
@@ -56,12 +57,9 @@ struct ServerSettingsView: View {
                     }
                 } else {
                     Section("Authentication") {
-                        SecureField("API Key", text: Binding(
-                            get: { server.token ?? "" },
-                            set: { server.token = $0.isEmpty ? nil : $0 }
-                        ))
-                        .autocapitalization(.none)
-                        .autocorrectionDisabled()
+                        SecureField("API Key", text: $editToken)
+                            .autocapitalization(.none)
+                            .autocorrectionDisabled()
                     }
 
                     Section("Model") {
@@ -74,11 +72,20 @@ struct ServerSettingsView: View {
                             }
                         }
                     }
+
+                    Section("System Prompt") {
+                        TextField("System prompt (optional)", text: $editSystemPrompt, axis: .vertical)
+                            .lineLimit(3...8)
+                    } footer: {
+                        Text("Instructions sent with every message to set the AI's behavior")
+                    }
                 }
 
                 Section {
-                    Button("Clear Message History", role: .destructive) {
-                        server.messages.removeAll()
+                    Button("Clear All Conversations", role: .destructive) {
+                        for conversation in server.conversations {
+                            modelContext.delete(conversation)
+                        }
                     }
                     .buttonStyle(.glass)
                 }
@@ -88,9 +95,17 @@ struct ServerSettingsView: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") {
+                        // Save token to keychain
+                        server.token = editToken.isEmpty ? nil : editToken
+                        // Save system prompt
+                        server.systemPrompt = editSystemPrompt.isEmpty ? nil : editSystemPrompt
                         dismiss()
                     }
                 }
+            }
+            .onAppear {
+                editToken = server.token ?? ""
+                editSystemPrompt = server.systemPrompt ?? ""
             }
         }
     }
@@ -98,4 +113,5 @@ struct ServerSettingsView: View {
 
 #Preview {
     ServerSettingsView(server: Server(name: "Test", url: "wss://localhost:8080"))
+        .modelContainer(for: [Server.self, Conversation.self, Message.self], inMemory: true)
 }

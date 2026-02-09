@@ -106,5 +106,5 @@ struct ServerListView: View {
 
 #Preview {
     ServerListView()
-        .modelContainer(for: Server.self, inMemory: true)
+        .modelContainer(for: [Server.self, Conversation.self, Message.self], inMemory: true)
 }

@@ -53,6 +53,11 @@ extension Color {
         light: UIColor(red: 0.635, green: 0.620, blue: 0.588, alpha: 1), // #A29E96
         dark: UIColor(red: 0.463, green: 0.451, blue: 0.431, alpha: 1)   // #76736E
     )
+
+    static let conduitCodeBackground = Color(
+        light: UIColor(red: 0.941, green: 0.929, blue: 0.914, alpha: 1), // #F0EDEA warm light gray
+        dark: UIColor(red: 0.118, green: 0.125, blue: 0.141, alpha: 1)   // #1E2024 near-black
+    )
 }
 
 // MARK: - Background Modifier
