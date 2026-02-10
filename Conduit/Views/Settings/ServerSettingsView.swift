@@ -31,13 +31,13 @@ struct ServerSettingsView: View {
                 if server.type == .websocket {
                     Section("Connection") {
                         TextField("URL", text: $server.url)
-                            .autocapitalization(.none)
+                            .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                     }
 
                     Section("Authentication") {
                         SecureField("Token", text: $editToken)
-                            .autocapitalization(.none)
+                            .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                     }
 
@@ -46,7 +46,7 @@ struct ServerSettingsView: View {
                             get: { server.defaultCwd ?? "" },
                             set: { server.defaultCwd = $0.isEmpty ? nil : $0 }
                         ))
-                        .autocapitalization(.none)
+                        .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                     }
 
@@ -58,7 +58,7 @@ struct ServerSettingsView: View {
                 } else {
                     Section("Authentication") {
                         SecureField("API Key", text: $editToken)
-                            .autocapitalization(.none)
+                            .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                     }
 

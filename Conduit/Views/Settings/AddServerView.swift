@@ -47,13 +47,13 @@ struct AddServerView: View {
                         TextField("URL", text: $url)
                             .textContentType(.URL)
                             .keyboardType(.URL)
-                            .autocapitalization(.none)
+                            .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                     }
 
                     Section {
                         SecureField("Token (optional)", text: $token)
-                            .autocapitalization(.none)
+                            .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                     } footer: {
                         Text("Authentication token if your server requires it")
@@ -61,7 +61,7 @@ struct AddServerView: View {
 
                     Section {
                         TextField("Default directory (optional)", text: $defaultCwd)
-                            .autocapitalization(.none)
+                            .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                     } footer: {
                         Text("Working directory for commands, e.g. /home/user/projects")
@@ -75,7 +75,7 @@ struct AddServerView: View {
                 } else {
                     Section {
                         SecureField("API Key", text: $apiKey)
-                            .autocapitalization(.none)
+                            .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                     } footer: {
                         Text("Your Anthropic API key")

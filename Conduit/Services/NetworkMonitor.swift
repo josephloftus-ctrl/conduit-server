@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import Observation
 
 @MainActor
 @Observable
@@ -9,7 +10,7 @@ final class NetworkMonitor {
 
     var onNetworkRestored: (() -> Void)?
 
-    private let monitor = NWPathMonitor()
+    private nonisolated(unsafe) let monitor = NWPathMonitor()
     private let queue = DispatchQueue(label: "com.josephburton.conduit.networkmonitor")
     private var wasDisconnected = false
 
