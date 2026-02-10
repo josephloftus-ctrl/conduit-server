@@ -73,9 +73,11 @@ struct ServerSettingsView: View {
                         }
                     }
 
-                    Section("System Prompt") {
+                    Section {
                         TextField("System prompt (optional)", text: $editSystemPrompt, axis: .vertical)
                             .lineLimit(3...8)
+                    } header: {
+                        Text("System Prompt")
                     } footer: {
                         Text("Instructions sent with every message to set the AI's behavior")
                     }
