@@ -163,6 +163,58 @@ Client                              Server
 
 ---
 
+## Extensions (v1.1)
+
+The following message types extend the base protocol. Clients that don't recognize them should ignore unknown types gracefully.
+
+### typing (S→C)
+
+Server is processing, sent before the first `chunk`.
+
+```json
+{
+  "type": "typing"
+}
+```
+
+### meta (S→C)
+
+Sent after `done` with model info and token usage.
+
+```json
+{
+  "type": "meta",
+  "model": "llama3.1",
+  "input_tokens": 512,
+  "output_tokens": 204
+}
+```
+
+### push (S→C)
+
+Server-initiated message (cron results, reminders). Not in response to a client message.
+
+```json
+{
+  "type": "push",
+  "title": "Morning Briefing",
+  "content": "Here's your overview..."
+}
+```
+
+### set_conversation (C→S)
+
+Switch to a different conversation (web UI).
+
+```json
+{
+  "type": "set_conversation",
+  "conversation_id": "abc123def456"
+}
+```
+
+---
+
 ## Reference Implementation
 
-See the main repo for example server implementations.
+See `server/` for the Python backend implementation.

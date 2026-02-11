@@ -45,3 +45,14 @@ iOSInjectionProject/
 *.p12
 *.mobileprovision
 ExportOptions.plist
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.db
+
+# Node
+node_modules/
+web/dist/

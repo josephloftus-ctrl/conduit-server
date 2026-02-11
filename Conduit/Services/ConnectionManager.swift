@@ -15,6 +15,8 @@ final class ConnectionManager {
     var pendingPermission: PendingPermission?
     private(set) var errorMessage: String?
     private(set) var isReconnecting: Bool = false
+    private(set) var activeToolCalls: [ToolCallState] = []
+    private(set) var lastModel: String?
 
     var connectionState: WebSocketService.State {
         guard let server = currentServer else { return .disconnected }
@@ -31,7 +33,7 @@ final class ConnectionManager {
         }
     }
 
-    var onMessageComplete: ((String) -> Void)?
+    var onMessageComplete: ((String, [ToolCallState]) -> Void)?
 
     struct PendingPermission: Identifiable {
         let id: String
@@ -70,7 +72,7 @@ final class ConnectionManager {
 
         claudeAPI.onComplete = { [weak self] fullText in
             self?.isStreaming = false
-            self?.onMessageComplete?(fullText)
+            self?.onMessageComplete?(fullText, [])
             self?.streamingContent = ""
         }
 
@@ -142,6 +144,7 @@ final class ConnectionManager {
 
     func sendMessage(_ content: String, conversationHistory: [ClaudeAPIService.APIMessage] = [], systemPrompt: String? = nil) {
         streamingContent = ""
+        activeToolCalls = []
         isStreaming = true
 
         guard let server = currentServer else { return }
@@ -170,10 +173,12 @@ final class ConnectionManager {
 
         // Save partial content if any
         let partial = streamingContent
+        let tools = activeToolCalls
         if !partial.isEmpty {
-            onMessageComplete?(partial)
+            onMessageComplete?(partial, tools)
         }
         streamingContent = ""
+        activeToolCalls = []
     }
 
     func setCwd(_ cwd: String) {
@@ -194,13 +199,38 @@ final class ConnectionManager {
         case .hello(let server, let version, let capabilities):
             print("Connected to \(server) v\(version), capabilities: \(capabilities)")
 
+        case .typing:
+            // Server indicates the model is thinking
+            break
+
         case .chunk(let content):
             streamingContent += content
 
         case .done:
             isStreaming = false
-            onMessageComplete?(streamingContent)
+            let tools = activeToolCalls
+            onMessageComplete?(streamingContent, tools)
             streamingContent = ""
+            activeToolCalls = []
+
+        case .meta(let model, _, _):
+            lastModel = model
+
+        case .toolStart(let toolCallId, let name, let arguments):
+            let tc = ToolCallState(
+                id: toolCallId,
+                name: name,
+                arguments: arguments,
+                status: .running
+            )
+            activeToolCalls.append(tc)
+
+        case .toolDone(let toolCallId, let name, let result, let error):
+            if let idx = activeToolCalls.firstIndex(where: { $0.id == toolCallId }) {
+                activeToolCalls[idx].status = error != nil ? .failed : .done
+                activeToolCalls[idx].result = result
+                activeToolCalls[idx].error = error
+            }
 
         case .permission(let id, let action, let detail):
             if currentServer?.yoloMode == true {
@@ -209,9 +239,16 @@ final class ConnectionManager {
                 pendingPermission = PendingPermission(id: id, action: action, detail: detail)
             }
 
+        case .push(let content, let title):
+            // Could show a local notification — for now just log
+            print("Push: \(title) — \(content.prefix(100))")
+
         case .error(let errorMessage):
             print("Server error: \(errorMessage)")
             isStreaming = false
+
+        case .unknown(let type):
+            print("Unknown server message type: \(type)")
         }
     }
 }

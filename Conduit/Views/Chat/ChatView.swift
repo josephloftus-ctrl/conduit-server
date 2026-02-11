@@ -41,12 +41,13 @@ struct ChatView: View {
                                 .id(message.id)
                             }
 
-                            // Streaming content
-                            if connectionManager.isStreaming && !connectionManager.streamingContent.isEmpty {
+                            // Streaming content (with tool calls)
+                            if connectionManager.isStreaming && (!connectionManager.streamingContent.isEmpty || !connectionManager.activeToolCalls.isEmpty) {
                                 MessageBubble(
                                     content: connectionManager.streamingContent,
                                     role: .assistant,
-                                    isStreaming: true
+                                    isStreaming: true,
+                                    toolCalls: connectionManager.activeToolCalls
                                 )
                                 .id("streaming")
                             }
@@ -232,7 +233,7 @@ struct ChatView: View {
     }
 
     private func setupConnectionManager() {
-        connectionManager.onMessageComplete = { [self] content in
+        connectionManager.onMessageComplete = { [self] content, toolCalls in
             guard let conversation = currentConversation else { return }
             let message = Message(role: .assistant, content: content, conversation: conversation)
             modelContext.insert(message)

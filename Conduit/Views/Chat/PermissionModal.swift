@@ -36,6 +36,47 @@ struct PermissionModal: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
 
+                    // Edit: show old_text -> new_text as diff
+                    if let oldText = permission.detail.oldText {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Changes:")
+                                .font(.system(.caption, design: .rounded).weight(.medium))
+                                .foregroundStyle(.secondary)
+
+                            ScrollView {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("- " + oldText)
+                                        .foregroundStyle(Color.conduitError)
+                                    Text("+ " + (permission.detail.newText ?? ""))
+                                        .foregroundStyle(Color.conduitSuccess)
+                                }
+                                .font(.system(.caption, design: .monospaced))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .frame(maxHeight: 200)
+                            .padding(12)
+                            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 10))
+                        }
+                    }
+
+                    // Write: show content preview
+                    if permission.detail.oldText == nil, let content = permission.detail.content {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Content:")
+                                .font(.system(.caption, design: .rounded).weight(.medium))
+                                .foregroundStyle(.secondary)
+
+                            ScrollView {
+                                Text(String(content.prefix(500)))
+                                    .font(.system(.caption, design: .monospaced))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .frame(maxHeight: 200)
+                            .padding(12)
+                            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 10))
+                        }
+                    }
+
                     if let diff = permission.detail.diff {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Changes:")
@@ -101,33 +142,32 @@ struct PermissionModal: View {
     }
 
     private var iconName: String {
-        switch permission.action {
-        case "edit_file":
-            return "doc.badge.ellipsis"
-        case "create_file":
+        let action = permission.action
+        // New format: "write:write_file", "write:edit_file", "execute:run_command"
+        if action.contains("write_file") || action.contains("create_file") {
             return "doc.badge.plus"
-        case "delete_file":
+        } else if action.contains("edit_file") {
+            return "doc.badge.ellipsis"
+        } else if action.contains("delete_file") {
             return "doc.badge.minus"
-        case "run_command":
+        } else if action.contains("run_command") || action.contains("execute") {
             return "terminal"
-        default:
-            return "questionmark.circle"
         }
+        return "questionmark.circle"
     }
 
     private var title: String {
-        switch permission.action {
-        case "edit_file":
+        let action = permission.action
+        if action.contains("write_file") {
+            return "Write file?"
+        } else if action.contains("edit_file") {
             return "Edit file?"
-        case "create_file":
-            return "Create file?"
-        case "delete_file":
+        } else if action.contains("delete_file") {
             return "Delete file?"
-        case "run_command":
+        } else if action.contains("run_command") || action.contains("execute") {
             return "Run command?"
-        default:
-            return "Permission requested"
         }
+        return "Permission requested"
     }
 }
 
@@ -135,11 +175,14 @@ struct PermissionModal: View {
     PermissionModal(
         permission: ConnectionManager.PendingPermission(
             id: "123",
-            action: "edit_file",
+            action: "write:edit_file",
             detail: PermissionDetail(
                 path: "/home/user/project/src/main.rs",
-                diff: "- old line\n+ new line",
-                command: nil
+                diff: nil,
+                command: nil,
+                content: nil,
+                oldText: "old line",
+                newText: "new line"
             )
         ),
         onResponse: { _ in }
