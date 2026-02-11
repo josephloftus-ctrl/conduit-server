@@ -1,0 +1,235 @@
+"""Read-only filesystem tools — read_file, list_directory, glob_files, grep."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from pathlib import Path
+
+from . import register
+from .definitions import ToolDefinition
+from .util import resolve_path as _resolve_path, is_allowed as _is_allowed
+
+log = logging.getLogger("conduit.tools.fs")
+
+MAX_FILE_SIZE = 50 * 1024  # 50KB truncation limit
+MAX_RESULTS = 200
+
+
+async def _read_file(path: str, offset: int = 0, limit: int = 0) -> str:
+    """Read file contents with optional line offset/limit."""
+    p = _resolve_path(path)
+    if not p.exists():
+        return f"Error: File not found: {path}"
+    if not p.is_file():
+        return f"Error: Not a file: {path}"
+    if not _is_allowed(p):
+        return f"Error: Access denied — {path} is not in an allowed directory"
+
+    try:
+        content = p.read_text(errors="replace")
+    except PermissionError:
+        return f"Error: Permission denied reading {path}"
+
+    # Apply line offset/limit
+    if offset > 0 or limit > 0:
+        lines = content.splitlines(keepends=True)
+        start = max(0, offset)
+        end = start + limit if limit > 0 else len(lines)
+        content = "".join(lines[start:end])
+
+    if len(content) > MAX_FILE_SIZE:
+        content = content[:MAX_FILE_SIZE] + f"\n\n... [truncated at {MAX_FILE_SIZE // 1024}KB]"
+
+    return content
+
+
+async def _list_directory(path: str) -> str:
+    """List directory entries with type indicators."""
+    p = _resolve_path(path)
+    if not p.exists():
+        return f"Error: Directory not found: {path}"
+    if not p.is_dir():
+        return f"Error: Not a directory: {path}"
+    if not _is_allowed(p):
+        return f"Error: Access denied — {path} is not in an allowed directory"
+
+    try:
+        entries = sorted(p.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower()))
+    except PermissionError:
+        return f"Error: Permission denied listing {path}"
+
+    lines = []
+    for entry in entries[:MAX_RESULTS]:
+        try:
+            if entry.is_symlink():
+                lines.append(f"  {entry.name} -> {entry.resolve()}")
+            elif entry.is_dir():
+                lines.append(f"  {entry.name}/")
+            else:
+                size = entry.stat().st_size
+                if size >= 1024 * 1024:
+                    size_str = f"{size / (1024*1024):.1f}MB"
+                elif size >= 1024:
+                    size_str = f"{size / 1024:.1f}KB"
+                else:
+                    size_str = f"{size}B"
+                lines.append(f"  {entry.name}  ({size_str})")
+        except (PermissionError, OSError):
+            lines.append(f"  {entry.name}  (access denied)")
+
+    header = f"{p}/ ({len(entries)} entries)"
+    if len(entries) > MAX_RESULTS:
+        header += f" [showing first {MAX_RESULTS}]"
+    return header + "\n" + "\n".join(lines)
+
+
+async def _glob_files(pattern: str, path: str = "~") -> str:
+    """Find files matching a glob pattern."""
+    p = _resolve_path(path)
+    if not _is_allowed(p):
+        return f"Error: Access denied — {path} is not in an allowed directory"
+    if not p.exists():
+        return f"Error: Path not found: {path}"
+
+    matches = []
+    for match in p.glob(pattern):
+        matches.append(str(match))
+        if len(matches) >= MAX_RESULTS:
+            break
+
+    if not matches:
+        return f"No files matching '{pattern}' in {p}"
+
+    result = f"Found {len(matches)} match(es) for '{pattern}' in {p}:\n"
+    result += "\n".join(f"  {m}" for m in sorted(matches))
+    if len(matches) >= MAX_RESULTS:
+        result += f"\n  ... [limited to {MAX_RESULTS} results]"
+    return result
+
+
+async def _grep(pattern: str, path: str = "~", include: str = "") -> str:
+    """Search file contents with regex using grep."""
+    p = _resolve_path(path)
+    if not _is_allowed(p):
+        return f"Error: Access denied — {path} is not in an allowed directory"
+    if not p.exists():
+        return f"Error: Path not found: {path}"
+
+    cmd = ["grep", "-rn", "--color=never", "-m", "50"]
+    if include:
+        cmd.extend(["--include", include])
+    cmd.extend([pattern, str(p)])
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+    except asyncio.TimeoutError:
+        return "Error: Search timed out after 15 seconds"
+
+    output = stdout.decode(errors="replace").strip()
+    if not output:
+        return f"No matches for '{pattern}' in {p}"
+
+    # Truncate if too large
+    if len(output) > MAX_FILE_SIZE:
+        output = output[:MAX_FILE_SIZE] + "\n... [truncated]"
+
+    return output
+
+
+# --- Register all filesystem tools ---
+
+def register_all():
+    """Register all filesystem tools."""
+    register(ToolDefinition(
+        name="read_file",
+        description="Read the contents of a file. Returns the text content. Use offset/limit for large files.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Absolute or ~-relative path to the file",
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Line number to start reading from (0-indexed). Optional.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of lines to read. Optional, 0 means all.",
+                },
+            },
+            "required": ["path"],
+        },
+        handler=_read_file,
+        permission="none",
+    ))
+
+    register(ToolDefinition(
+        name="list_directory",
+        description="List the contents of a directory. Shows files with sizes and subdirectories.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Absolute or ~-relative path to the directory",
+                },
+            },
+            "required": ["path"],
+        },
+        handler=_list_directory,
+        permission="none",
+    ))
+
+    register(ToolDefinition(
+        name="glob_files",
+        description="Find files matching a glob pattern (e.g. '**/*.pdf', '*.xlsx'). Searches recursively.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Glob pattern to match (e.g. '**/*.pdf', '*.py')",
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Directory to search in. Defaults to ~.",
+                },
+            },
+            "required": ["pattern"],
+        },
+        handler=_glob_files,
+        permission="none",
+    ))
+
+    register(ToolDefinition(
+        name="grep",
+        description="Search for a regex pattern in file contents. Returns matching lines with file paths and line numbers.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Regex pattern to search for",
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Directory or file to search in. Defaults to ~.",
+                },
+                "include": {
+                    "type": "string",
+                    "description": "File glob to filter (e.g. '*.py', '*.md'). Optional.",
+                },
+            },
+            "required": ["pattern"],
+        },
+        handler=_grep,
+        permission="none",
+    ))

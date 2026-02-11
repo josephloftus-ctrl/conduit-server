@@ -1,0 +1,113 @@
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+personality:
+  name: "Conduit"
+  system_prompt: |
+    You are {name}, a personal AI assistant for Joseph. You are concise, practical, and friendly.
+    You speak naturally — never reveal your underlying model or provider. You are {name}, period.
+
+    Current time: {time} on {date} ({day}).
+
+    {memories}
+
+    {pending_tasks}
+
+    {tools_context}
+
+models:
+  providers:
+    nim:
+      type: openai_compat
+      role: primary
+      base_url: "https://integrate.api.nvidia.com/v1"
+      api_key_env: "NIM_API_KEY"
+      default_model: "moonshotai/kimi-k2.5"
+    openrouter:
+      type: openai_compat
+      role: primary
+      base_url: "https://openrouter.ai/api/v1"
+      api_key_env: "OPENROUTER_API_KEY"
+      default_model: "openrouter/pony-alpha"
+    ollama:
+      type: openai_compat
+      role: fallback
+      base_url: "https://ollama.com/v1"
+      api_key_env: "OLLAMA_API_KEY"
+      default_model: "kimi-k2.5"
+    haiku:
+      type: anthropic
+      role: brain
+      api_key_env: "ANTHROPIC_API_KEY"
+      model: "claude-haiku-4-5-20251001"
+    gemini:
+      type: gemini
+      role: long_context
+      vertex: true
+      project_env: "GCP_PROJECT"
+      location: "us-east4"
+      default_model: "gemini-2.0-flash"
+    opus:
+      type: anthropic
+      role: reasoning
+      api_key_env: "ANTHROPIC_API_KEY"
+      model: "claude-opus-4-6"
+    claude_code:
+      type: claude_code
+      role: coding
+      model: "sonnet"
+      working_dir: "~"
+      max_budget_usd: 1.00
+      timeout: 600
+
+  routing:
+    default: "openrouter"
+    fallback_chain: ["openrouter", "nim", "ollama"]
+    long_context: "gemini"
+    escalation: "opus"
+    brain: "haiku"
+    opus_daily_budget_tokens: 50000
+
+classifier:
+  complexity_threshold: 60
+  long_context_chars: 3000
+  haiku_band: [40, 70]
+
+memory:
+  max_memories: 200
+  summary_threshold: 30
+  extraction_enabled: true
+
+scheduler:
+  timezone: "America/New_York"
+  active_hours: [7, 22]
+  heartbeat_interval_minutes: 15
+  idle_checkin_minutes: 120
+  reminder_check_minutes: 5
+
+tools:
+  enabled: true
+  max_agent_turns: 10
+  command_timeout_seconds: 30
+  allowed_directories:
+    - "~/Documents/Work/lockheed/"
+    - "~/Projects/spectre/"
+    - "~/Projects/conduit/"
+    - "~/Documents/Sorted/"
+    - "~/Downloads/"
+  auto_approve_reads: true
+  auto_approve_all: false
+
+ntfy:
+  server_env: "NTFY_SERVER"
+  topic_env: "NTFY_TOPIC"
+  token_env: "NTFY_TOKEN"
+  enabled: true
+
+telegram:
+  enabled: true
+  token_env: "TELEGRAM_BOT_TOKEN"
+  webhook_secret_env: "TELEGRAM_WEBHOOK_SECRET"
+  chat_id: "8153583172"
+  webhook_url: "https://conduit.josephloftus.com/api/telegram/webhook"
