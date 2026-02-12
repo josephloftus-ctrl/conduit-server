@@ -85,6 +85,10 @@ async def run_agent_loop(
         # OpenAI-compat (NIM, Ollama)
         tool_defs = [t.to_openai() for t in tools]
 
+    # Build local name→tool map so dynamically-injected tools (e.g. agent comms)
+    # are found even if they aren't in the global registry.
+    local_tools = {t.name: t for t in tools}
+
     total_usage = Usage()
     full_text = ""
     turns = 0
@@ -120,7 +124,7 @@ async def run_agent_loop(
 
         # Execute each tool and append results
         for tc in turn_tool_calls:
-            tool = get_tool(tc.name)
+            tool = get_tool(tc.name) or local_tools.get(tc.name)
             if not tool:
                 result = f"Error: Unknown tool '{tc.name}'"
                 await manager.send_tool_done(ws, tc.id, tc.name, error=result)

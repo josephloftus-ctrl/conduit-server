@@ -1,11 +1,51 @@
 <script>
-  import { conversations, currentConversationId, switchConversation, newConversation, loadConversations } from '../lib/stores/chat.js';
+  import { conversations, currentConversationId, switchConversation, newConversation, loadConversations, renameConversation, deleteConversation } from '../lib/stores/chat.js';
   import { onMount } from 'svelte';
 
   let { open = $bindable(false), onOpenSettings } = $props();
 
+  let searchQuery = $state('');
+  let editingId = $state(null);
+  let editValue = $state('');
+  let confirmDeleteId = $state(null);
+  let confirmTimeout = null;
+
   onMount(() => {
     loadConversations();
+  });
+
+  // Filter conversations by search query
+  let filtered = $derived(
+    searchQuery.trim()
+      ? $conversations.filter(c =>
+          c.title.toLowerCase().includes(searchQuery.trim().toLowerCase())
+        )
+      : $conversations
+  );
+
+  // Group filtered conversations by date
+  let grouped = $derived.by(() => {
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1);
+    const weekAgo = new Date(today); weekAgo.setDate(today.getDate() - 7);
+
+    const groups = { today: [], yesterday: [], week: [], older: [] };
+
+    for (const conv of filtered) {
+      const d = new Date(conv.updated_at * 1000);
+      if (d >= today) groups.today.push(conv);
+      else if (d >= yesterday) groups.yesterday.push(conv);
+      else if (d >= weekAgo) groups.week.push(conv);
+      else groups.older.push(conv);
+    }
+
+    const result = [];
+    if (groups.today.length) result.push({ label: 'Today', convs: groups.today });
+    if (groups.yesterday.length) result.push({ label: 'Yesterday', convs: groups.yesterday });
+    if (groups.week.length) result.push({ label: 'Last 7 Days', convs: groups.week });
+    if (groups.older.length) result.push({ label: 'Older', convs: groups.older });
+    return result;
   });
 
   function handleNew() {
@@ -14,12 +54,50 @@
   }
 
   function handleSelect(id) {
+    if (editingId) return;
     switchConversation(id);
     open = false;
   }
 
   function handleSettings() {
     onOpenSettings?.();
+  }
+
+  function startEdit(conv) {
+    editingId = conv.id;
+    editValue = conv.title;
+  }
+
+  function saveEdit() {
+    if (editingId && editValue.trim()) {
+      renameConversation(editingId, editValue.trim());
+    }
+    editingId = null;
+    editValue = '';
+  }
+
+  function cancelEdit() {
+    editingId = null;
+    editValue = '';
+  }
+
+  function handleEditKeydown(e) {
+    if (e.key === 'Enter') { e.preventDefault(); saveEdit(); }
+    else if (e.key === 'Escape') { e.preventDefault(); cancelEdit(); }
+  }
+
+  function handleDelete(id) {
+    if (confirmDeleteId === id) {
+      // Second click — delete
+      clearTimeout(confirmTimeout);
+      confirmDeleteId = null;
+      deleteConversation(id);
+    } else {
+      // First click — enter confirm state
+      confirmDeleteId = id;
+      clearTimeout(confirmTimeout);
+      confirmTimeout = setTimeout(() => { confirmDeleteId = null; }, 3000);
+    }
   }
 
   function formatDate(ts) {
@@ -39,20 +117,62 @@
     <button class="new-btn" onclick={handleNew}>+ New</button>
   </div>
 
+  <div class="search-box">
+    <input
+      type="text"
+      placeholder="Search..."
+      bind:value={searchQuery}
+    />
+  </div>
+
   <div class="conversation-list">
-    {#each $conversations as conv (conv.id)}
-      <button
-        class="conv-item"
-        class:active={$currentConversationId === conv.id}
-        onclick={() => handleSelect(conv.id)}
-      >
-        <span class="conv-title">{conv.title}</span>
-        <span class="conv-date">{formatDate(conv.updated_at)}</span>
-      </button>
+    {#each grouped as group (group.label)}
+      <div class="group-label">{group.label}</div>
+      {#each group.convs as conv (conv.id)}
+        <div
+          class="conv-item"
+          class:active={$currentConversationId === conv.id}
+        >
+          {#if editingId === conv.id}
+            <input
+              class="edit-input"
+              type="text"
+              bind:value={editValue}
+              onkeydown={handleEditKeydown}
+              onblur={saveEdit}
+              autofocus
+            />
+          {:else}
+            <button
+              class="conv-btn"
+              onclick={() => handleSelect(conv.id)}
+              ondblclick={() => startEdit(conv)}
+            >
+              <span class="conv-title">{conv.title}</span>
+              <span class="conv-date">{formatDate(conv.updated_at)}</span>
+            </button>
+            <button
+              class="delete-btn"
+              class:confirm={confirmDeleteId === conv.id}
+              onclick={(e) => { e.stopPropagation(); handleDelete(conv.id); }}
+              title={confirmDeleteId === conv.id ? 'Click again to delete' : 'Delete conversation'}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="3 6 5 6 21 6"></polyline>
+                <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>
+                <path d="M10 11v6"></path>
+                <path d="M14 11v6"></path>
+              </svg>
+            </button>
+          {/if}
+        </div>
+      {/each}
     {/each}
 
     {#if $conversations.length === 0}
       <div class="empty">No conversations yet</div>
+    {:else if filtered.length === 0}
+      <div class="empty">No matches</div>
     {/if}
   </div>
 
@@ -124,29 +244,67 @@
   }
   .new-btn:hover { opacity: 0.85; }
 
+  .search-box {
+    padding: 8px 12px 4px;
+  }
+
+  .search-box input {
+    width: 100%;
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 13px;
+    outline: none;
+    box-sizing: border-box;
+  }
+  .search-box input:focus {
+    border-color: var(--accent);
+  }
+  .search-box input::placeholder {
+    color: var(--text-muted);
+  }
+
   .conversation-list {
     flex: 1;
     overflow-y: auto;
-    padding: 8px;
+    padding: 4px 8px 8px;
+  }
+
+  .group-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 10px 12px 4px;
   }
 
   .conv-item {
-    width: 100%;
+    display: flex;
+    align-items: center;
+    border-radius: var(--radius-sm);
+    transition: background 0.15s;
+    position: relative;
+  }
+  .conv-item:hover { background: var(--bg-hover); }
+  .conv-item.active { background: var(--bg-hover); }
+
+  .conv-btn {
+    flex: 1;
     display: flex;
     align-items: center;
     justify-content: space-between;
     padding: 10px 12px;
     background: transparent;
     border: none;
-    border-radius: var(--radius-sm);
     color: var(--text);
     cursor: pointer;
     text-align: left;
     font-size: 14px;
-    transition: background 0.15s;
+    min-width: 0;
   }
-  .conv-item:hover { background: var(--bg-hover); }
-  .conv-item.active { background: var(--bg-hover); }
 
   .conv-title {
     overflow: hidden;
@@ -160,6 +318,47 @@
     font-size: 12px;
     flex-shrink: 0;
     margin-left: 8px;
+  }
+
+  .edit-input {
+    flex: 1;
+    margin: 4px;
+    padding: 6px 8px;
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 14px;
+    outline: none;
+    box-sizing: border-box;
+  }
+
+  .delete-btn {
+    display: none;
+    padding: 6px;
+    margin-right: 4px;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    border-radius: 4px;
+    flex-shrink: 0;
+    transition: color 0.15s, background 0.15s;
+  }
+  .conv-item:hover .delete-btn {
+    display: flex;
+  }
+  .delete-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text);
+  }
+  .delete-btn.confirm {
+    display: flex;
+    color: #ef4444;
+  }
+  .delete-btn.confirm:hover {
+    background: rgba(239, 68, 68, 0.1);
+    color: #ef4444;
   }
 
   .empty {

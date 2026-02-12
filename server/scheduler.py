@@ -47,6 +47,35 @@ async def start(manager: ConnectionManager):
         replace_existing=True,
     )
 
+    # Email polling job — checks for new unread emails
+    if config.OUTLOOK_ENABLED:
+        email_interval = config.OUTLOOK_POLL_INTERVAL
+        _scheduler.add_job(
+            _check_email,
+            CronTrigger.from_crontab(f"*/{email_interval} * * * *", timezone=config.TIMEZONE),
+            id="email_check",
+            replace_existing=True,
+        )
+        log.info("Email polling enabled every %d min", email_interval)
+
+    # Memory decay — runs daily at 3am, reduces importance of untouched memories
+    _scheduler.add_job(
+        _run_memory_decay,
+        CronTrigger.from_crontab("0 3 * * *", timezone=config.TIMEZONE),
+        id="memory_decay",
+        replace_existing=True,
+    )
+    log.info("Memory decay scheduled daily at 3am")
+
+    # Memory consolidation — runs weekly on Sunday at 4am
+    _scheduler.add_job(
+        _run_memory_consolidation,
+        CronTrigger.from_crontab("0 4 * * 0", timezone=config.TIMEZONE),
+        id="memory_consolidation",
+        replace_existing=True,
+    )
+    log.info("Memory consolidation scheduled weekly (Sun 4am)")
+
     _scheduler.start()
     log.info("Scheduler started with %d tasks, reminder check every %d min, heartbeat every %d min",
              len(tasks), interval, hb_interval)
@@ -160,6 +189,73 @@ async def _check_reminders():
 
     if remaining != reminders:
         await db.kv_set("reminders", json.dumps(remaining if remaining else []))
+
+
+async def _check_email():
+    """Check for new unread emails and notify if count increased."""
+    if not _manager:
+        return
+
+    try:
+        from . import outlook
+
+        if not outlook.is_configured() or not outlook.get_access_token():
+            return
+
+        current_count = await outlook.get_unread_count()
+        last_raw = await db.kv_get("outlook_last_unread_count")
+        last_count = int(last_raw) if last_raw else 0
+
+        if current_count > last_count:
+            new_count = current_count - last_count
+            # Fetch the newest unread messages
+            messages = await outlook.get_inbox(count=min(new_count, 5), unread_only=True)
+
+            lines = [f"You have {new_count} new email{'s' if new_count > 1 else ''}:"]
+            for msg in messages:
+                fr = msg.get("from", {}).get("emailAddress", {})
+                sender = fr.get("name", fr.get("address", "unknown"))
+                subject = msg.get("subject", "(no subject)")
+                lines.append(f"- **{subject}** from {sender}")
+
+            body = "\n".join(lines)
+
+            # Push to WebSocket clients
+            await _manager.push(content=body, title="New Email")
+
+            # Push to ntfy
+            from . import ntfy
+            await ntfy.push(
+                title="New Email",
+                body=body[:500],
+                tags=["email"],
+                priority=3,
+            )
+
+            log.info("Email notification: %d new messages", new_count)
+
+        await db.kv_set("outlook_last_unread_count", str(current_count))
+
+    except Exception as e:
+        log.error("Email check error: %s", e)
+
+
+async def _run_memory_decay():
+    """Decay stale memories — reduces importance of untouched memories."""
+    try:
+        from . import memory
+        await memory.decay_memories()
+    except Exception as e:
+        log.error("Memory decay error: %s", e)
+
+
+async def _run_memory_consolidation():
+    """Consolidate memories — merge duplicates, prune stale entries."""
+    try:
+        from . import memory
+        await memory.consolidate_memories()
+    except Exception as e:
+        log.error("Memory consolidation error: %s", e)
 
 
 # --- /remind command parser ---

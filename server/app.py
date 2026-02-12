@@ -8,7 +8,8 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
 from . import config, db
@@ -23,6 +24,9 @@ manager = ConnectionManager()
 
 # Provider registry — populated at startup
 providers: dict = {}
+
+# Agent registry — populated at startup if agents configured
+agent_registry: "AgentRegistry | None" = None
 
 # Lazy imports to avoid circular deps
 router_module = None
@@ -112,16 +116,16 @@ def render_system_prompt() -> str:
     return prompt
 
 
-async def render_system_prompt_async() -> str:
+async def render_system_prompt_async(query: str = "") -> str:
     """Build the system prompt with async context (memories, tasks)."""
     now = datetime.now()
     template = config.SYSTEM_PROMPT_TEMPLATE
 
-    # Get memory context
+    # Get memory context (query-aware semantic search)
     memory_context = ""
     if memory_module:
         try:
-            memory_context = await memory_module.get_memory_context()
+            memory_context = await memory_module.get_memory_context(query=query)
         except Exception as e:
             log.warning("Failed to get memory context: %s", e)
 
@@ -158,6 +162,10 @@ async def render_system_prompt_async() -> str:
                 line += f" ({desc})"
             lines.append(line)
         lines.append("Use tools when the user asks about files, directories, code, or needs file operations.")
+        if config.WEB_SEARCH_ENABLED:
+            lines.append("You can search the web and fetch URL content using web_search and web_fetch tools.")
+        if config.OUTLOOK_ENABLED:
+            lines.append("You can read the user's Outlook inbox using read_inbox, search_email, and read_email tools.")
         tools_context = "\n".join(lines)
 
     prompt = template.format(
@@ -178,6 +186,15 @@ async def lifespan(app: FastAPI):
     await db.init_db()
     _build_providers()
     log.info("Providers loaded: %s", list(providers.keys()))
+
+    # Build agent registry if configured
+    global agent_registry
+    if config.AGENTS_LIST:
+        from .agents import AgentRegistry
+        agent_registry = AgentRegistry.build(
+            config.AGENTS_LIST, config.BINDINGS_LIST,
+            config.AGENTS_COMMS, providers,
+        )
 
     # Restore saved OpenRouter model override
     or_prov = providers.get("openrouter")
@@ -201,7 +218,58 @@ async def lifespan(app: FastAPI):
             register_exec_tools()
         except ImportError:
             pass
+        try:
+            from .tools.web import register_all as register_web_tools
+            register_web_tools()
+        except ImportError:
+            pass
+        try:
+            from .tools.email import register_all as register_email_tools
+            register_email_tools()
+        except ImportError:
+            pass
+        try:
+            from .tools.pdf import register_all as register_pdf_tools
+            register_pdf_tools()
+        except ImportError:
+            pass
+        # Skill tools — grocery, expenses, calendar
+        if getattr(config, "SKILL_GROCERY_ENABLED", True):
+            try:
+                from .tools.grocery import register_all as register_grocery_tools
+                register_grocery_tools()
+            except ImportError:
+                pass
+        if getattr(config, "SKILL_EXPENSES_ENABLED", True):
+            try:
+                from .tools.expenses import register_all as register_expense_tools
+                register_expense_tools()
+            except ImportError:
+                pass
+        if getattr(config, "SKILL_CALENDAR_ENABLED", True):
+            try:
+                from .tools.calendar import register_all as register_calendar_tools
+                register_calendar_tools()
+            except ImportError:
+                pass
         log.info("Tools registered: %s", [t.name for t in get_all_tools()])
+
+    # Initialize embeddings + vectorstore
+    try:
+        from . import embeddings as emb_mod
+        emb_mod.init()
+    except Exception as e:
+        log.warning("Embeddings not available: %s", e)
+
+    try:
+        from . import vectorstore as vs_mod
+        vs_ok = await vs_mod.init()
+        if vs_ok:
+            log.info("Vectorstore initialized")
+        else:
+            log.warning("Vectorstore init returned False — memories will be unavailable")
+    except Exception as e:
+        log.warning("Vectorstore not available: %s", e)
 
     # Load memory module
     global memory_module
@@ -222,6 +290,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         log.warning("Scheduler not available: %s", e)
 
+    # Start file watcher if configured
+    watcher_observer = None
+    if config.WATCHER_ENABLED:
+        try:
+            from . import watcher as watcher_mod
+            watcher_observer = watcher_mod.start(manager)
+        except Exception as e:
+            log.warning("File watcher not available: %s", e)
+
     # Initialize Telegram bot if configured
     global telegram_bot
     if config.TELEGRAM_ENABLED and config.TELEGRAM_BOT_TOKEN:
@@ -233,10 +310,18 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    if watcher_observer:
+        from . import watcher as watcher_mod
+        watcher_mod.stop(watcher_observer)
     if telegram_bot:
         await telegram_bot.delete_webhook()
     if scheduler_module:
         await scheduler_module.stop()
+    try:
+        from . import vectorstore as vs_mod
+        await vs_mod.close()
+    except Exception:
+        pass
 
 
 app = FastAPI(title="Conduit", lifespan=lifespan)
@@ -304,6 +389,35 @@ async def stream_with_fallback(messages: list[dict], system: str,
     raise RuntimeError(f"All providers failed. Last error: {last_error}")
 
 
+async def _auto_title_conversation(conversation_id: str, user_msg: str, assistant_msg: str):
+    """Generate a title for a new conversation using the brain model."""
+    try:
+        conv = await db.get_conversation(conversation_id)
+        if not conv or conv["title"] != "New Chat":
+            return
+
+        brain = providers.get(config.BRAIN_PROVIDER)
+        if not brain:
+            return
+
+        prompt_messages = [
+            {"role": "user", "content": user_msg},
+            {"role": "assistant", "content": assistant_msg[:500]},
+            {"role": "user", "content": "Generate a 3-5 word title for this conversation. Reply with ONLY the title, nothing else."},
+        ]
+        title, _ = await brain.generate(prompt_messages, system="You generate short conversation titles.")
+        title = title.strip().strip('"').strip("'")
+        if title and len(title) < 60:
+            await db.update_conversation_title(conversation_id, title)
+            await manager.broadcast({
+                "type": "conversation_updated",
+                "id": conversation_id,
+                "title": title,
+            })
+    except Exception as e:
+        log.warning("Auto-title failed for %s: %s", conversation_id, e)
+
+
 async def handle_message(ws: WebSocket, data: dict, conversation_id: str):
     """Process an incoming chat message — classify, route, stream back."""
     content = data.get("content", "").strip()
@@ -322,78 +436,153 @@ async def handle_message(ws: WebSocket, data: dict, conversation_id: str):
         if handled:
             return
 
-    # Classify and route
-    global router_module
-    if router_module is None:
-        try:
-            from . import router as rm
-            router_module = rm
-        except Exception:
-            pass
-
-    # Build message history (need count for classifier)
+    # Build message history
     history = await db.get_messages(conversation_id, limit=50)
     conversation_length = len(history)
 
-    provider_name = None
-    intent = None
-    if router_module:
-        provider_name = await router_module.route(content, providers, conversation_length)
-        # Get intent for reminder detection
-        from .classifier import classify_fast
-        intent, _ = classify_fast(content, conversation_length)
+    # --- Agent resolution path ---
+    resolved_agent = None
+    if agent_registry and agent_registry.has_agents:
+        from .agents import BindingContext, extract_command
 
-    # Handle natural language reminders — respond AND extract
-    if intent and intent.name == "REMINDER":
-        from .scheduler import parse_remind
-        reminder_result = await parse_remind(content)
-        # Don't short-circuit — let the model respond naturally too
-        # The reminder is extracted in the background
+        cmd = extract_command(content)
+        ctx = BindingContext(channel="websocket", command=cmd, content=content)
+        resolved_agent = agent_registry.resolve(ctx)
 
-    # Strip /command prefix before sending to model
-    model_content = content
-    if router_module:
-        model_content = router_module.strip_command(content)
-    messages = []
-    for msg in history[:-1]:
-        messages.append({"role": msg["role"], "content": msg["content"]})
-    messages.append({"role": "user", "content": model_content})
+    if resolved_agent:
+        # Agent path: use resolved agent's provider, tools, prompt, max_turns
+        model_content = content
+        if content.startswith("/"):
+            parts = content.split(maxsplit=1)
+            model_content = parts[1] if len(parts) > 1 else ""
 
-    # Get context-aware system prompt
-    system = await render_system_prompt_async()
+        messages = []
+        for msg in history[:-1]:
+            messages.append({"role": msg["role"], "content": msg["content"]})
+        messages.append({"role": "user", "content": model_content})
 
-    # Stream with fallback chain
-    await manager.send_typing(ws)
+        system = await render_system_prompt_async(query=model_content)
+        system = resolved_agent.get_system_prompt(system)
 
-    try:
-        selected_provider = get_provider(provider_name)
-        tools = get_all_tools()
+        all_tools = get_all_tools()
+        comms_tools = agent_registry.get_comms_tools(resolved_agent.id)
+        tools = resolved_agent.get_tools(all_tools, extra_tools=comms_tools)
+        max_turns = resolved_agent.get_max_turns()
+        selected_provider = resolved_agent.provider
 
-        if getattr(selected_provider, 'manages_own_tools', False):
-            # Claude Code: spawns its own subprocess, manages its own tools
-            session_key = f"cc_session:{conversation_id}"
-            session_id = await db.kv_get(session_key)
-            response_text, usage, new_session_id, cost_usd = await selected_provider.run(
-                prompt=model_content, session_id=session_id, ws=ws, manager=manager,
-            )
-            if new_session_id and new_session_id != session_id:
-                await db.kv_set(session_key, new_session_id)
-            provider = selected_provider
-        elif selected_provider.supports_tools and config.TOOLS_ENABLED and tools:
-            from . import agent
-            response_text, usage = await agent.run_agent_loop(
-                messages, system, selected_provider, tools, ws, manager,
-                max_turns=config.MAX_AGENT_TURNS,
-            )
-            provider = selected_provider
-        else:
-            response_text, usage, provider = await stream_with_fallback(
-                messages, system, provider_name=provider_name, ws=ws
-            )
-    except Exception as e:
-        log.error("All providers failed: %s", e)
-        await manager.send_error(ws, f"All providers failed: {e}")
-        return
+        # Budget-gate Opus even on agent path
+        if resolved_agent.cfg.provider == config.ESCALATION_PROVIDER:
+            used = await db.get_daily_opus_tokens()
+            if used >= config.OPUS_DAILY_BUDGET:
+                log.warning("Agent '%s' uses Opus but budget exhausted — falling back",
+                            resolved_agent.id)
+                fallback = agent_registry.get("default")
+                if fallback and fallback.id != resolved_agent.id:
+                    resolved_agent = fallback
+                    selected_provider = fallback.provider
+                    tools = fallback.get_tools(all_tools)
+                    system = fallback.get_system_prompt(system)
+                    max_turns = fallback.get_max_turns()
+
+        # Reminder detection runs regardless of path
+        try:
+            from .classifier import classify_fast
+            intent, _ = classify_fast(content, conversation_length)
+            if intent and intent.name == "REMINDER":
+                from .scheduler import parse_remind
+                await parse_remind(content)
+        except Exception:
+            pass
+
+        await manager.send_typing(ws)
+
+        try:
+            if getattr(selected_provider, 'manages_own_tools', False):
+                session_key = resolved_agent.get_session_key("websocket", conversation_id)
+                session_id = await db.kv_get(session_key)
+                response_text, usage, new_session_id, cost_usd = await selected_provider.run(
+                    prompt=model_content, session_id=session_id, ws=ws, manager=manager,
+                )
+                if new_session_id and new_session_id != session_id:
+                    await db.kv_set(session_key, new_session_id)
+                provider = selected_provider
+            elif selected_provider.supports_tools and config.TOOLS_ENABLED and tools:
+                from . import agent
+                response_text, usage = await agent.run_agent_loop(
+                    messages, system, selected_provider, tools, ws, manager,
+                    max_turns=max_turns,
+                )
+                provider = selected_provider
+            else:
+                response_text, usage, provider = await stream_with_fallback(
+                    messages, system, provider_name=resolved_agent.cfg.provider, ws=ws
+                )
+        except Exception as e:
+            log.error("Agent '%s' failed: %s", resolved_agent.id, e)
+            await manager.send_error(ws, f"Agent failed: {e}")
+            return
+
+    else:
+        # --- Legacy path (no agents configured or no match) ---
+        global router_module
+        if router_module is None:
+            try:
+                from . import router as rm
+                router_module = rm
+            except Exception:
+                pass
+
+        provider_name = None
+        intent = None
+        if router_module:
+            provider_name = await router_module.route(content, providers, conversation_length)
+            from .classifier import classify_fast
+            intent, _ = classify_fast(content, conversation_length)
+
+        if intent and intent.name == "REMINDER":
+            from .scheduler import parse_remind
+            await parse_remind(content)
+
+        model_content = content
+        if router_module:
+            model_content = router_module.strip_command(content)
+        messages = []
+        for msg in history[:-1]:
+            messages.append({"role": msg["role"], "content": msg["content"]})
+        messages.append({"role": "user", "content": model_content})
+
+        system = await render_system_prompt_async(query=model_content)
+
+        await manager.send_typing(ws)
+
+        try:
+            selected_provider = get_provider(provider_name)
+            tools = get_all_tools()
+
+            if getattr(selected_provider, 'manages_own_tools', False):
+                session_key = f"cc_session:{conversation_id}"
+                session_id = await db.kv_get(session_key)
+                response_text, usage, new_session_id, cost_usd = await selected_provider.run(
+                    prompt=model_content, session_id=session_id, ws=ws, manager=manager,
+                )
+                if new_session_id and new_session_id != session_id:
+                    await db.kv_set(session_key, new_session_id)
+                provider = selected_provider
+            elif selected_provider.supports_tools and config.TOOLS_ENABLED and tools:
+                from . import agent
+                response_text, usage = await agent.run_agent_loop(
+                    messages, system, selected_provider, tools, ws, manager,
+                    max_turns=config.MAX_AGENT_TURNS,
+                )
+                provider = selected_provider
+            else:
+                response_text, usage, provider = await stream_with_fallback(
+                    messages, system, provider_name=provider_name, ws=ws
+                )
+        except Exception as e:
+            log.error("All providers failed: %s", e)
+            await manager.send_error(ws, f"All providers failed: {e}")
+            return
 
     await manager.send_done(ws)
 
@@ -406,6 +595,12 @@ async def handle_message(ws: WebSocket, data: dict, conversation_id: str):
     if response_text:
         await db.add_message(conversation_id, "assistant", response_text,
                              model=provider.model, source=provider.name)
+
+    # Background: auto-title conversation if still "New Chat"
+    if response_text:
+        asyncio.create_task(
+            _auto_title_conversation(conversation_id, content, response_text)
+        )
 
     # Background: extract memories
     if memory_module and config.EXTRACTION_ENABLED:
@@ -544,8 +739,22 @@ async def handle_command(ws: WebSocket, content: str, conversation_id: str) -> b
         await manager.send_done(ws)
         return True
 
+    if cmd == "/agents":
+        if agent_registry and agent_registry.has_agents:
+            agents = agent_registry.list_agents()
+            lines = ["**Configured agents:**"]
+            for a in agents:
+                cmds = ", ".join(f"`{c}`" for c in a["commands"]) if a["commands"] else "(no bindings)"
+                default_tag = " **(default)**" if a["default"] else ""
+                lines.append(f"- **{a['id']}**{default_tag}: {a['model']} via {a['provider']} — {cmds}")
+            await manager.send_chunk(ws, "\n".join(lines))
+        else:
+            await manager.send_chunk(ws, "No agents configured.")
+        await manager.send_done(ws)
+        return True
+
     if cmd == "/help":
-        await manager.send_chunk(ws, "\n".join([
+        lines = [
             "**Commands:**",
             "- `/clear` -- new conversation",
             "- `/models` -- list providers",
@@ -556,14 +765,25 @@ async def handle_command(ws: WebSocket, content: str, conversation_id: str) -> b
             "- `/remind <task> at <time>` -- set a reminder",
             "- `/remind <task> in <N> minutes/hours`",
             "- `/schedule` -- list scheduled tasks",
-            "- `/or <query>` -- use OpenRouter",
-            "- `/research <query>` -- use Gemini",
-            "- `/opus <query>` -- use Opus (budget-capped)",
-            "- `/think <query>` -- use Opus for deep thinking",
-            "- `/code <query>` -- use Claude Code (CLI with tools)",
-            "",
-            "Or just talk naturally -- I'll figure out the rest.",
-        ]))
+            "- `/agents` -- list configured agents",
+        ]
+        # Add agent bindings if configured
+        if agent_registry and agent_registry.has_agents:
+            lines.append("")
+            lines.append("**Agent commands:**")
+            for a in agent_registry.list_agents():
+                for c in a["commands"]:
+                    lines.append(f"- `{c} <query>` -- use {a['id']} agent ({a['provider']})")
+        else:
+            lines.extend([
+                "- `/or <query>` -- use OpenRouter",
+                "- `/research <query>` -- use Gemini",
+                "- `/opus <query>` -- use Opus (budget-capped)",
+                "- `/think <query>` -- use Opus for deep thinking",
+                "- `/code <query>` -- use Claude Code (CLI with tools)",
+            ])
+        lines.extend(["", "Or just talk naturally -- I'll figure out the rest."])
+        await manager.send_chunk(ws, "\n".join(lines))
         await manager.send_done(ws)
         return True
 
@@ -586,6 +806,23 @@ async def api_messages(cid: str):
 async def api_new_conversation():
     cid = await db.create_conversation()
     return {"id": cid}
+
+
+@app.put("/api/conversations/{cid}")
+async def api_rename_conversation(cid: str, body: dict):
+    title = body.get("title", "").strip()
+    if not title:
+        return {"ok": False, "error": "Title required"}
+    await db.update_conversation_title(cid, title)
+    await manager.broadcast({"type": "conversation_updated", "id": cid, "title": title})
+    return {"ok": True}
+
+
+@app.delete("/api/conversations/{cid}")
+async def api_delete_conversation(cid: str):
+    await db.delete_conversation(cid)
+    await manager.broadcast({"type": "conversation_deleted", "id": cid})
+    return {"ok": True}
 
 
 # --- Settings API ---
@@ -729,7 +966,8 @@ async def api_get_memories():
 
 @app.delete("/api/memories/{memory_id}")
 async def api_delete_memory(memory_id: str):
-    await db.delete_memory(memory_id)
+    from . import vectorstore
+    await vectorstore.delete(memory_id)
     return {"ok": True}
 
 
@@ -761,6 +999,40 @@ async def api_test_provider(name: str):
         return {"ok": False, "error": str(e)}
 
 
+# --- Voice endpoints ---
+
+@app.post("/api/voice/transcribe")
+async def api_voice_transcribe(file: UploadFile):
+    """Transcribe uploaded audio to text via Whisper."""
+    if not config.VOICE_ENABLED or not config.OPENAI_API_KEY:
+        return {"ok": False, "error": "Voice not configured"}
+    try:
+        from . import voice
+        audio_bytes = await file.read()
+        text = await voice.transcribe(audio_bytes, filename=file.filename or "audio.webm")
+        return {"ok": True, "text": text}
+    except Exception as e:
+        log.error("Transcribe error: %s", e)
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/api/voice/speak")
+async def api_voice_speak(body: dict):
+    """Convert text to speech, returns OGG/Opus audio."""
+    if not config.VOICE_ENABLED or not config.OPENAI_API_KEY:
+        return Response(status_code=503, content="Voice not configured")
+    text = body.get("text", "").strip()
+    if not text:
+        return Response(status_code=400, content="No text provided")
+    try:
+        from . import voice
+        audio_bytes = await voice.speak(text)
+        return Response(content=audio_bytes, media_type="audio/ogg")
+    except Exception as e:
+        log.error("TTS error: %s", e)
+        return Response(status_code=500, content=str(e))
+
+
 # --- Telegram webhook ---
 
 @app.post("/api/telegram/webhook")
@@ -780,8 +1052,15 @@ async def telegram_webhook(request: Request):
     msg = data.get("message", {})
     text = msg.get("text", "")
     chat_id = msg.get("chat", {}).get("id")
+    voice_obj = msg.get("voice")
 
-    if text and chat_id:
+    if voice_obj and chat_id:
+        # Voice message — transcribe, process, respond with voice
+        from . import telegram as tg_module
+        file_id = voice_obj.get("file_id", "")
+        task = asyncio.create_task(tg_module.handle_telegram_voice(telegram_bot, chat_id, file_id))
+        task.add_done_callback(lambda t: log.error("Telegram voice handler error: %s", t.exception()) if not t.cancelled() and t.exception() else None)
+    elif text and chat_id:
         from . import telegram as tg_module
         task = asyncio.create_task(tg_module.handle_telegram_message(telegram_bot, chat_id, text))
         task.add_done_callback(lambda t: log.error("Telegram handler error: %s", t.exception()) if not t.cancelled() and t.exception() else None)

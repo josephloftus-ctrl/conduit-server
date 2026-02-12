@@ -54,6 +54,8 @@ CREATE TABLE IF NOT EXISTS kv (
     updated_at REAL NOT NULL
 );
 
+-- DEPRECATED: memories now stored in Firestore (vectorstore.py).
+-- Table kept to avoid migration issues with existing databases.
 CREATE TABLE IF NOT EXISTS memories (
     id TEXT PRIMARY KEY,
     category TEXT NOT NULL DEFAULT 'fact',
@@ -123,6 +125,23 @@ async def update_conversation_title(cid: str, title: str):
             (title, _now(), cid),
         )
         await db.commit()
+
+
+async def delete_conversation(cid: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM messages WHERE conversation_id = ?", (cid,))
+        await db.execute("DELETE FROM conversation_summaries WHERE conversation_id = ?", (cid,))
+        await db.execute("DELETE FROM conversations WHERE id = ?", (cid,))
+        await db.commit()
+
+
+async def get_conversation(cid: str) -> dict | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        rows = await db.execute_fetchall(
+            "SELECT * FROM conversations WHERE id = ?", (cid,)
+        )
+        return dict(rows[0]) if rows else None
 
 
 # --- Messages ---
@@ -278,71 +297,25 @@ async def kv_set(key: str, value: str):
         await db.commit()
 
 
-# --- Memories ---
+# --- Memories (DEPRECATED — now in Firestore via vectorstore.py) ---
+# Legacy functions kept for migration script (migrate_memories.py).
 
-async def add_memory(category: str, content: str, source_conversation: str | None = None,
-                     importance: int = 5) -> str:
-    mid = _id()
-    now = _now()
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "INSERT INTO memories (id, category, content, source_conversation, importance, created_at, access_count) "
-            "VALUES (?, ?, ?, ?, ?, ?, 0)",
-            (mid, category, content, source_conversation, importance, now),
-        )
-        await db.commit()
-    return mid
-
-
-async def get_memories(limit: int = 200) -> list[dict]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        rows = await db.execute_fetchall(
+async def get_memories_legacy(limit: int = 200) -> list[dict]:
+    """Read memories from SQLite (for migration only)."""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        rows = await conn.execute_fetchall(
             "SELECT * FROM memories ORDER BY importance DESC, created_at DESC LIMIT ?",
             (limit,),
         )
         return [dict(r) for r in rows]
 
 
-async def get_memories_by_category(category: str) -> list[dict]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        rows = await db.execute_fetchall(
-            "SELECT * FROM memories WHERE category = ? ORDER BY importance DESC",
-            (category,),
-        )
-        return [dict(r) for r in rows]
-
-
-async def delete_memory(memory_id: str):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
-        await db.commit()
-
-
-async def touch_memory(memory_id: str):
-    """Update last_accessed and increment access_count."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "UPDATE memories SET last_accessed = ?, access_count = access_count + 1 WHERE id = ?",
-            (_now(), memory_id),
-        )
-        await db.commit()
-
-
-async def count_memories() -> int:
-    async with aiosqlite.connect(DB_PATH) as db:
-        row = await db.execute_fetchall("SELECT COUNT(*) FROM memories")
+async def count_memories_legacy() -> int:
+    """Count SQLite memories (for migration only)."""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        row = await conn.execute_fetchall("SELECT COUNT(*) FROM memories")
         return row[0][0] if row else 0
-
-
-async def find_duplicate_memory(content: str) -> bool:
-    """Check if a similar memory already exists (exact content match)."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        row = await db.execute_fetchall(
-            "SELECT COUNT(*) FROM memories WHERE content = ?", (content,)
-        )
-        return (row[0][0] if row else 0) > 0
 
 
 # --- Conversation Summaries ---

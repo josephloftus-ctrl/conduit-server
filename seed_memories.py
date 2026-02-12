@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""Seed Conduit's memory database with bootstrap knowledge about Joseph."""
+"""Seed Conduit's Firestore memory store with bootstrap knowledge about Joseph.
+
+Embeds all memories via Gemini text-embedding-005 and stores in Firestore
+with semantic dedup checking.
+"""
 
 import asyncio
 import sys
+import uuid
 sys.path.insert(0, ".")
 
-from server import db
+from server import embeddings, vectorstore
 
 MEMORIES = [
     # === FACTS (importance 8-10) ===
@@ -78,27 +83,48 @@ MEMORIES = [
 
 
 async def main():
-    await db.init_db()
+    # Initialize embeddings and vectorstore
+    embeddings.init()
+    vs_ok = await vectorstore.init()
+    if not vs_ok:
+        print("ERROR: Firestore initialization failed. Check GCP_PROJECT and credentials.")
+        sys.exit(1)
 
-    existing = await db.count_memories()
-    print(f"Existing memories: {existing}")
+    existing_count = await vectorstore.count()
+    print(f"Existing memories in Firestore: {existing_count}")
+
+    # Batch embed all memory contents
+    contents = [content for _, content, _ in MEMORIES]
+    print(f"Embedding {len(contents)} memories...")
+    all_embeddings = await embeddings.embed_batch(contents)
+    print(f"Embeddings generated: {len(all_embeddings)}")
 
     added = 0
     skipped = 0
-    for category, content, importance in MEMORIES:
-        if await db.find_duplicate_memory(content):
+
+    for i, (category, content, importance) in enumerate(MEMORIES):
+        embedding = all_embeddings[i]
+
+        # Semantic dedup check
+        existing = await vectorstore.find_similar(embedding, threshold=0.9)
+        if existing:
             skipped += 1
+            print(f"  SKIP (duplicate of '{existing['content'][:40]}...'): {content[:50]}")
             continue
-        await db.add_memory(
+
+        doc_id = uuid.uuid4().hex[:12]
+        await vectorstore.upsert_memory(
+            doc_id=doc_id,
             category=category,
             content=content,
-            source_conversation=None,
+            embedding=embedding,
             importance=importance,
         )
         added += 1
 
-    total = await db.count_memories()
-    print(f"Added: {added}, Skipped (duplicates): {skipped}, Total memories: {total}")
+    total = await vectorstore.count()
+    print(f"\nAdded: {added}, Skipped (duplicates): {skipped}, Total memories: {total}")
+    await vectorstore.close()
 
 
 if __name__ == "__main__":

@@ -71,6 +71,51 @@ class TelegramBot:
         except Exception as e:
             log.error("Telegram deleteWebhook error: %s", e)
 
+    async def get_file_url(self, file_id: str) -> str | None:
+        """Get a download URL for a Telegram file by file_id."""
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(f"{self.base}/getFile", params={"file_id": file_id})
+                if resp.status_code == 200:
+                    data = resp.json()
+                    file_path = data.get("result", {}).get("file_path", "")
+                    if file_path:
+                        return f"https://api.telegram.org/file/bot{self.token}/{file_path}"
+        except Exception as e:
+            log.error("getFile error: %s", e)
+        return None
+
+    async def download_file(self, file_id: str) -> bytes | None:
+        """Download a file from Telegram by file_id."""
+        url = await self.get_file_url(file_id)
+        if not url:
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(url)
+                if resp.status_code == 200:
+                    return resp.content
+        except Exception as e:
+            log.error("File download error: %s", e)
+        return None
+
+    async def send_voice(self, chat_id: int | str, audio_bytes: bytes) -> dict | None:
+        """Send a voice message (OGG/Opus) to a chat."""
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                files = {"voice": ("response.ogg", audio_bytes, "audio/ogg")}
+                resp = await client.post(
+                    f"{self.base}/sendVoice",
+                    data={"chat_id": str(chat_id)},
+                    files=files,
+                )
+                if resp.status_code == 200:
+                    return resp.json()
+                log.warning("sendVoice failed (%d): %s", resp.status_code, resp.text)
+        except Exception as e:
+            log.error("sendVoice error: %s", e)
+        return None
+
     async def push(self, title: str = "", body: str = ""):
         """Convenience: send a notification-style message to the configured chat."""
         if not config.TELEGRAM_ENABLED or not config.TELEGRAM_CHAT_ID:
@@ -139,7 +184,8 @@ class TelegramAdapter:
         return "".join(self.chunks)
 
 
-async def handle_telegram_message(bot: TelegramBot, chat_id: int, text: str):
+async def handle_telegram_message(bot: TelegramBot, chat_id: int, text: str,
+                                   _respond_with_voice: bool = False):
     """Process an incoming Telegram message — classify, route, respond."""
     # Security: only accept messages from the configured chat
     if config.TELEGRAM_CHAT_ID and str(chat_id) != config.TELEGRAM_CHAT_ID:
@@ -178,16 +224,10 @@ async def handle_telegram_message(bot: TelegramBot, chat_id: int, text: str):
             return
 
     # Lazy-load modules (same pattern as app.py)
-    from .app import get_provider, render_system_prompt_async, providers as app_providers, stream_with_fallback
+    from .app import get_provider, render_system_prompt_async, providers as app_providers, stream_with_fallback, agent_registry
     from .tools import get_all as get_all_tools
 
-    router_module = None
     memory_module = None
-    try:
-        from . import router as rm
-        router_module = rm
-    except Exception:
-        pass
     try:
         from . import memory as mem_mod
         memory_module = mem_mod
@@ -198,60 +238,173 @@ async def handle_telegram_message(bot: TelegramBot, chat_id: int, text: str):
     history = await db.get_messages(conversation_id, limit=50)
     conversation_length = len(history)
 
-    # Route
-    provider_name = None
-    if router_module:
-        provider_name = await router_module.route(text, app_providers, conversation_length)
-
-    # Strip /command prefix before sending to model
-    model_content = text
-    if router_module:
-        model_content = router_module.strip_command(text)
-
-    messages = []
-    for msg in history[:-1]:
-        messages.append({"role": msg["role"], "content": msg["content"]})
-    messages.append({"role": "user", "content": model_content})
-
-    system = await render_system_prompt_async()
-    adapter = TelegramAdapter(bot, chat_id)
-
+    # Reminder detection runs regardless of routing path
     try:
-        selected_provider = get_provider(provider_name)
-        tools = get_all_tools()
+        from .classifier import classify_fast
+        intent, _ = classify_fast(text, conversation_length)
+        if intent and intent.name == "REMINDER":
+            from .scheduler import parse_remind
+            await parse_remind(text)
+    except Exception:
+        pass
 
-        if getattr(selected_provider, 'manages_own_tools', False):
-            session_key = f"cc_session:{conversation_id}"
-            session_id = await db.kv_get(session_key)
-            response_text, usage, new_session_id, cost_usd = await selected_provider.run(
-                prompt=model_content, session_id=session_id, ws=None, manager=adapter,
-            )
-            if new_session_id and new_session_id != session_id:
-                await db.kv_set(session_key, new_session_id)
-            provider = selected_provider
-        elif selected_provider.supports_tools and config.TOOLS_ENABLED and tools:
-            from . import agent
-            response_text, usage = await agent.run_agent_loop(
-                messages, system, selected_provider, tools, None, adapter,
-                max_turns=config.MAX_AGENT_TURNS,
-            )
-            provider = selected_provider
-        else:
-            response_text, usage, provider = await stream_with_fallback(
-                messages, system, provider_name=provider_name, ws=None,
-            )
-    except Exception as e:
-        log.error("Telegram message handling failed: %s", e)
-        await bot.send_message(chat_id, f"Something went wrong: {e}")
-        return
+    # --- Agent resolution ---
+    resolved_agent = None
+    provider_name = None  # needed by retry block if agent path is taken
+    if agent_registry and agent_registry.has_agents:
+        from .agents import BindingContext, extract_command
+
+        cmd = extract_command(text)
+        ctx = BindingContext(channel="telegram", peer=str(chat_id), command=cmd, content=text)
+        resolved_agent = agent_registry.resolve(ctx)
+
+    if resolved_agent:
+        # Agent path
+        model_content = text
+        if text.startswith("/"):
+            parts = text.split(maxsplit=1)
+            model_content = parts[1] if len(parts) > 1 else ""
+
+        messages = []
+        for msg in history[:-1]:
+            messages.append({"role": msg["role"], "content": msg["content"]})
+        messages.append({"role": "user", "content": model_content})
+
+        system = await render_system_prompt_async(query=model_content)
+        system = resolved_agent.get_system_prompt(system)
+
+        all_tools = get_all_tools()
+        comms_tools = agent_registry.get_comms_tools(resolved_agent.id)
+        tools = resolved_agent.get_tools(all_tools, extra_tools=comms_tools)
+        max_turns = resolved_agent.get_max_turns()
+        selected_provider = resolved_agent.provider
+
+        # Budget-gate Opus even on agent path
+        if resolved_agent.cfg.provider == config.ESCALATION_PROVIDER:
+            used = await db.get_daily_opus_tokens()
+            if used >= config.OPUS_DAILY_BUDGET:
+                log.warning("Agent '%s' uses Opus but budget exhausted — falling back",
+                            resolved_agent.id)
+                fallback = agent_registry.get("default")
+                if fallback and fallback.id != resolved_agent.id:
+                    resolved_agent = fallback
+                    selected_provider = fallback.provider
+                    tools = fallback.get_tools(all_tools)
+                    system = fallback.get_system_prompt(system)
+                    max_turns = fallback.get_max_turns()
+
+        adapter = TelegramAdapter(bot, chat_id)
+
+        try:
+            if getattr(selected_provider, 'manages_own_tools', False):
+                session_key = resolved_agent.get_session_key("telegram", str(chat_id))
+                session_id = await db.kv_get(session_key)
+                response_text, usage, new_session_id, cost_usd = await selected_provider.run(
+                    prompt=model_content, session_id=session_id, ws=None, manager=adapter,
+                )
+                if new_session_id and new_session_id != session_id:
+                    await db.kv_set(session_key, new_session_id)
+                provider = selected_provider
+            elif selected_provider.supports_tools and config.TOOLS_ENABLED and tools:
+                from . import agent
+                response_text, usage = await agent.run_agent_loop(
+                    messages, system, selected_provider, tools, None, adapter,
+                    max_turns=max_turns,
+                )
+                provider = selected_provider
+            else:
+                response_text, usage, provider = await stream_with_fallback(
+                    messages, system, provider_name=resolved_agent.cfg.provider, ws=None,
+                )
+        except Exception as e:
+            log.error("Agent '%s' failed in Telegram: %s", resolved_agent.id, e)
+            await bot.send_message(chat_id, f"Something went wrong: {e}")
+            return
+
+    else:
+        # Legacy path
+        router_module = None
+        try:
+            from . import router as rm
+            router_module = rm
+        except Exception:
+            pass
+
+        provider_name = None
+        if router_module:
+            provider_name = await router_module.route(text, app_providers, conversation_length)
+
+        model_content = text
+        if router_module:
+            model_content = router_module.strip_command(text)
+
+        messages = []
+        for msg in history[:-1]:
+            messages.append({"role": msg["role"], "content": msg["content"]})
+        messages.append({"role": "user", "content": model_content})
+
+        system = await render_system_prompt_async(query=model_content)
+        adapter = TelegramAdapter(bot, chat_id)
+
+        try:
+            selected_provider = get_provider(provider_name)
+            tools = get_all_tools()
+
+            if getattr(selected_provider, 'manages_own_tools', False):
+                session_key = f"cc_session:{conversation_id}"
+                session_id = await db.kv_get(session_key)
+                response_text, usage, new_session_id, cost_usd = await selected_provider.run(
+                    prompt=model_content, session_id=session_id, ws=None, manager=adapter,
+                )
+                if new_session_id and new_session_id != session_id:
+                    await db.kv_set(session_key, new_session_id)
+                provider = selected_provider
+            elif selected_provider.supports_tools and config.TOOLS_ENABLED and tools:
+                from . import agent
+                response_text, usage = await agent.run_agent_loop(
+                    messages, system, selected_provider, tools, None, adapter,
+                    max_turns=config.MAX_AGENT_TURNS,
+                )
+                provider = selected_provider
+            else:
+                response_text, usage, provider = await stream_with_fallback(
+                    messages, system, provider_name=provider_name, ws=None,
+                )
+        except Exception as e:
+            log.error("Telegram message handling failed: %s", e)
+            await bot.send_message(chat_id, f"Something went wrong: {e}")
+            return
 
     # Combine adapter buffer with any direct response_text
     final_text = adapter.get_response() or response_text
+
+    # Retry without tools if the model returned empty (some models choke on tool defs)
+    if not final_text:
+        log.warning("Empty response from %s with tools — retrying without tools", provider.name)
+        try:
+            adapter = TelegramAdapter(bot, chat_id)
+            response_text, usage, provider = await stream_with_fallback(
+                messages, system, provider_name=provider_name, ws=None,
+            )
+            final_text = adapter.get_response() or response_text
+        except Exception as e:
+            log.error("Tool-less retry also failed: %s", e)
+
     if not final_text:
         final_text = "(No response generated)"
 
-    # Send response
-    await bot.send_message(chat_id, final_text[:4096])
+    # Send response — as voice if the incoming message was voice
+    if _respond_with_voice and config.VOICE_ENABLED and config.OPENAI_API_KEY:
+        try:
+            from . import voice
+            await bot.send_chat_action(chat_id, "record_voice")
+            audio = await voice.speak(final_text[:4096])
+            await bot.send_voice(chat_id, audio)
+        except Exception as e:
+            log.warning("TTS failed, falling back to text: %s", e)
+            await bot.send_message(chat_id, final_text[:4096])
+    else:
+        await bot.send_message(chat_id, final_text[:4096])
 
     # Log usage
     if usage:
@@ -338,23 +491,83 @@ async def _handle_telegram_command(text: str, conversation_id: str,
         await db.kv_set("openrouter_model", arg)
         return f"OpenRouter model: `{arg}`"
 
+    if cmd == "/agents":
+        from .app import agent_registry
+        if agent_registry and agent_registry.has_agents:
+            agents = agent_registry.list_agents()
+            lines = ["*Configured agents:*"]
+            for a in agents:
+                cmds = ", ".join(a["commands"]) if a["commands"] else "(no bindings)"
+                default_tag = " (default)" if a["default"] else ""
+                lines.append(f"- *{a['id']}*{default_tag}: {a['model']} via {a['provider']} — {cmds}")
+            return "\n".join(lines)
+        return "No agents configured."
+
     if cmd == "/help":
-        return "\n".join([
+        lines = [
             "*Commands:*",
             "/clear - new conversation",
             "/usage - token budget status",
             "/memories - view stored memories",
             "/permissions - toggle tool auto-approve",
             "/model - switch OpenRouter model",
+            "/agents - list configured agents",
             "/help - this message",
-            "",
-            "Or just type naturally. Use prefixes:",
-            "/or - use OpenRouter",
-            "/opus - deep thinking",
-            "/research - use Gemini",
-            "/code - use Claude Code",
-        ])
+        ]
+        from .app import agent_registry
+        if agent_registry and agent_registry.has_agents:
+            lines.append("")
+            lines.append("*Agent commands:*")
+            for a in agent_registry.list_agents():
+                for c in a["commands"]:
+                    lines.append(f"{c} - {a['id']} agent ({a['provider']})")
+        else:
+            lines.extend([
+                "",
+                "Or just type naturally. Use prefixes:",
+                "/or - use OpenRouter",
+                "/opus - deep thinking",
+                "/research - use Gemini",
+                "/code - use Claude Code",
+            ])
+        return "\n".join(lines)
 
     # Not a recognized standalone command — pass through to model routing
     # (commands like /opus, /code, /research are model prefixes, not commands)
     return None
+
+
+async def handle_telegram_voice(bot: TelegramBot, chat_id: int, file_id: str):
+    """Handle an incoming Telegram voice message — transcribe, process, respond with voice."""
+    # Security check
+    if config.TELEGRAM_CHAT_ID and str(chat_id) != config.TELEGRAM_CHAT_ID:
+        log.warning("Ignoring voice from unauthorized chat_id: %s", chat_id)
+        return
+
+    if not config.VOICE_ENABLED or not config.OPENAI_API_KEY:
+        await bot.send_message(chat_id, "Voice is not configured. Set OPENAI_API_KEY in .env.")
+        return
+
+    await bot.send_chat_action(chat_id, "typing")
+
+    # Download the voice message
+    audio_bytes = await bot.download_file(file_id)
+    if not audio_bytes:
+        await bot.send_message(chat_id, "Couldn't download voice message.")
+        return
+
+    # Transcribe
+    from . import voice
+    try:
+        text = await voice.transcribe(audio_bytes, filename="voice.ogg")
+    except Exception as e:
+        log.error("Voice transcription failed: %s", e)
+        await bot.send_message(chat_id, f"Transcription failed: {e}")
+        return
+
+    if not text.strip():
+        await bot.send_message(chat_id, "(Couldn't understand the audio)")
+        return
+
+    # Process as a normal text message to get the response
+    await handle_telegram_message(bot, chat_id, text, _respond_with_voice=True)

@@ -4,7 +4,7 @@ import json
 import logging
 from datetime import datetime
 
-from . import config, db, ntfy, telegram as tg_module
+from . import config, db, ntfy, spectre, telegram as tg_module
 from .ws import ConnectionManager
 
 log = logging.getLogger("conduit.heartbeat")
@@ -68,6 +68,9 @@ async def check(manager: ConnectionManager):
             _sent_today["evening"] = today
             return
 
+    # Threshold alerts (every cycle)
+    await _check_thresholds(manager)
+
     # Idle check-in: if user has been idle for IDLE_CHECKIN_MINUTES
     idle_minutes = await _get_idle_minutes()
     if idle_minutes >= config.IDLE_CHECKIN_MINUTES:
@@ -88,7 +91,12 @@ async def _morning_heartbeat(manager: ConnectionManager):
     from .app import get_provider, render_system_prompt_async
 
     # Gather context
-    memories = await db.get_memories(limit=10)
+    try:
+        from . import memory as memory_module
+        memories = await memory_module.get_all_memories()
+        memories = memories[:10]
+    except Exception:
+        memories = []
     recent_convs = await db.get_recent_conversations_with_summaries(limit=3)
 
     context_parts = []
@@ -110,13 +118,43 @@ async def _morning_heartbeat(manager: ConnectionManager):
             rem_text = ", ".join(r["text"] for r in active[:5])
             context_parts.append(f"Pending reminders: {rem_text}")
 
+    # Pull Spectre operational data (graceful skip if offline)
+    try:
+        inv_summary = await spectre.get_inventory_summary()
+        if inv_summary:
+            parts = []
+            if "site_count" in inv_summary:
+                parts.append(f"{inv_summary['site_count']} sites tracked")
+            if "total_value" in inv_summary:
+                parts.append(f"${inv_summary['total_value']:,.0f} total inventory value")
+            if "flagged_items" in inv_summary:
+                parts.append(f"{inv_summary['flagged_items']} flagged items")
+            if parts:
+                context_parts.append(f"Spectre inventory: {', '.join(parts)}")
+
+        lm100_score = await spectre.get_site_score("lockhead_martin_bldg_100")
+        if lm100_score:
+            parts = []
+            if "score" in lm100_score:
+                parts.append(f"health score {lm100_score['score']}")
+            if "status" in lm100_score:
+                parts.append(lm100_score["status"])
+            if "delta" in lm100_score:
+                d = lm100_score["delta"]
+                parts.append(f"{'up' if d >= 0 else 'down'} {abs(d)} from last period")
+            if parts:
+                context_parts.append(f"LM Building 100: {', '.join(parts)}")
+    except Exception as e:
+        log.debug("Spectre data unavailable for morning heartbeat: %s", e)
+
     context = "\n".join(context_parts) if context_parts else "No specific context."
 
     prompt = (
         f"Give a brief, friendly morning check-in. Today is {datetime.now().strftime('%A, %B %d')}.\n"
         f"Context about the user:\n{context}\n\n"
         "Keep it warm and concise (under 150 words). Mention any relevant reminders or follow-ups "
-        "from recent conversations. Don't be generic — reference specific things you know."
+        "from recent conversations. If there's operational data from Spectre, mention it naturally. "
+        "Don't be generic — reference specific things you know."
     )
 
     provider = get_provider()  # NIM — free
@@ -219,7 +257,12 @@ async def _idle_heartbeat(manager: ConnectionManager, idle_minutes: float):
 
     # Get recent context
     recent_convs = await db.get_recent_conversations_with_summaries(limit=3)
-    memories = await db.get_memories(limit=5)
+    try:
+        from . import memory as memory_module
+        memories = await memory_module.get_all_memories()
+        memories = memories[:5]
+    except Exception:
+        memories = []
 
     context_parts = []
     if recent_convs:
@@ -263,3 +306,57 @@ async def _idle_heartbeat(manager: ConnectionManager, idle_minutes: float):
         log.info("Idle check-in sent")
     except Exception as e:
         log.error("Idle check-in failed: %s", e)
+
+
+async def _check_thresholds(manager: ConnectionManager):
+    """Check Spectre health scores against configured thresholds.
+
+    Uses KV-based cooldown to prevent alert spam.
+    """
+    # Quick bail if Spectre is unreachable
+    if not await spectre.health_check():
+        return
+
+    now = datetime.now().timestamp()
+    cooldown_seconds = config.ALERT_COOLDOWN_MINUTES * 60
+
+    # Check site health scores
+    for site_id in ("lockhead_martin_bldg_100",):
+        score_data = await spectre.get_site_score(site_id)
+        if not score_data or "score" not in score_data:
+            continue
+
+        score = score_data["score"]
+        if score >= config.HEALTH_SCORE_MINIMUM:
+            continue
+
+        # Check cooldown
+        cooldown_key = f"threshold_alert:health:{site_id}"
+        last_alert = await db.kv_get(cooldown_key)
+        if last_alert:
+            try:
+                if now - float(last_alert) < cooldown_seconds:
+                    continue
+            except (ValueError, TypeError):
+                pass
+
+        # Fire alert
+        site_name = score_data.get("site_name", site_id)
+        body = (
+            f"{site_name} health score dropped to {score} "
+            f"(minimum: {config.HEALTH_SCORE_MINIMUM})."
+        )
+        if "status" in score_data:
+            body += f" Status: {score_data['status']}."
+
+        await manager.push(content=f"**Health Alert**\n{body}", title="Health Alert")
+        await ntfy.push(
+            title="Health Alert",
+            body=body,
+            tags=["warning"],
+            priority=4,
+        )
+        await tg_module.push(title="Health Alert", body=body)
+
+        await db.kv_set(cooldown_key, str(now))
+        log.warning("Threshold alert: %s health score %s", site_name, score)
