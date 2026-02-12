@@ -47,6 +47,11 @@ memory_cfg = _raw.get("memory", {})
 MAX_MEMORIES = memory_cfg.get("max_memories", 200)
 SUMMARY_THRESHOLD = memory_cfg.get("summary_threshold", 30)
 EXTRACTION_ENABLED = memory_cfg.get("extraction_enabled", True)
+EMBEDDING_MODEL = memory_cfg.get("embedding_model", "text-embedding-005")
+EMBEDDING_DIMENSIONS = memory_cfg.get("embedding_dimensions", 768)
+SEARCH_TOP_K = memory_cfg.get("search_top_k", 15)
+IMPORTANCE_FLOOR = memory_cfg.get("importance_floor", 8)
+DEDUP_THRESHOLD = memory_cfg.get("dedup_threshold", 0.9)
 
 # Scheduler
 scheduler_cfg = _raw.get("scheduler", {})
@@ -65,6 +70,18 @@ ALLOWED_DIRECTORIES = tools_cfg.get("allowed_directories", [])
 AUTO_APPROVE_READS = tools_cfg.get("auto_approve_reads", True)
 AUTO_APPROVE_ALL = tools_cfg.get("auto_approve_all", False)
 
+# Agents
+agents_cfg = _raw.get("agents", {})
+AGENTS_LIST = agents_cfg.get("list", [])
+AGENTS_COMMS = agents_cfg.get("communication", {})
+BINDINGS_LIST = _raw.get("bindings", [])
+
+# Skills
+skills_cfg = _raw.get("skills", {})
+SKILL_GROCERY_ENABLED = skills_cfg.get("grocery", {}).get("enabled", True)
+SKILL_EXPENSES_ENABLED = skills_cfg.get("expenses", {}).get("enabled", True)
+SKILL_CALENDAR_ENABLED = skills_cfg.get("calendar", {}).get("enabled", True)
+
 # ntfy
 ntfy_cfg = _raw.get("ntfy", {})
 NTFY_SERVER = os.getenv(ntfy_cfg.get("server_env", "NTFY_SERVER"), "")
@@ -79,6 +96,44 @@ TELEGRAM_BOT_TOKEN = os.getenv(telegram_cfg.get("token_env", "TELEGRAM_BOT_TOKEN
 TELEGRAM_WEBHOOK_SECRET = os.getenv(telegram_cfg.get("webhook_secret_env", "TELEGRAM_WEBHOOK_SECRET"), "")
 TELEGRAM_CHAT_ID = str(telegram_cfg.get("chat_id", ""))
 TELEGRAM_WEBHOOK_URL = telegram_cfg.get("webhook_url", "")
+
+# Watcher
+watcher_cfg = _raw.get("watcher", {})
+WATCHER_ENABLED = watcher_cfg.get("enabled", False)
+WATCHER_DIRECTORIES = watcher_cfg.get("directories", [])
+SPECTRE_API = watcher_cfg.get("spectre_api", "http://localhost:8000")
+WATCHER_SORT_BASE = watcher_cfg.get("sort_base", "~/Documents/Sorted")
+WATCHER_DEBOUNCE = watcher_cfg.get("debounce_seconds", 3)
+
+# Thresholds
+thresholds_cfg = _raw.get("thresholds", {})
+FOOD_COST_WARNING = thresholds_cfg.get("food_cost_warning", 0.50)
+FOOD_COST_TARGET = thresholds_cfg.get("food_cost_target", 0.45)
+HEALTH_SCORE_MINIMUM = thresholds_cfg.get("health_score_minimum", 60)
+ALERT_COOLDOWN_MINUTES = thresholds_cfg.get("alert_cooldown_minutes", 360)
+
+# Web / SearXNG
+web_cfg = _raw.get("web", {})
+SEARXNG_URL = web_cfg.get("searxng_url", "http://localhost:8888")
+WEB_FETCH_TIMEOUT = web_cfg.get("fetch_timeout_seconds", 15)
+WEB_SEARCH_ENABLED = web_cfg.get("enabled", True)
+DEEP_SEARCH_CACHE_TTL = web_cfg.get("deep_search_cache_ttl_seconds", 900)
+DEEP_SEARCH_MAX_PAGES = web_cfg.get("deep_search_max_pages", 3)
+DEEP_SEARCH_MAX_CHUNKS = web_cfg.get("deep_search_max_chunks", 10)
+
+# Voice (OpenAI Whisper + TTS)
+voice_cfg = _raw.get("voice", {})
+VOICE_ENABLED = voice_cfg.get("enabled", False)
+OPENAI_API_KEY = os.getenv(voice_cfg.get("openai_api_key_env", "OPENAI_API_KEY"), "")
+VOICE_STT_MODEL = voice_cfg.get("stt_model", "whisper-1")
+VOICE_TTS_MODEL = voice_cfg.get("tts_model", "tts-1")
+VOICE_TTS_VOICE = voice_cfg.get("tts_voice", "alloy")
+
+# Outlook
+outlook_cfg = _raw.get("outlook", {})
+OUTLOOK_CLIENT_ID = os.getenv(outlook_cfg.get("client_id_env", "OUTLOOK_CLIENT_ID"), "")
+OUTLOOK_ENABLED = outlook_cfg.get("enabled", True)
+OUTLOOK_POLL_INTERVAL = outlook_cfg.get("poll_interval_minutes", 15)
 
 # Legacy compat
 SYSTEM_PROMPT = SYSTEM_PROMPT_TEMPLATE
@@ -105,10 +160,19 @@ def reload():
     global ESCALATION_PROVIDER, BRAIN_PROVIDER, OPUS_DAILY_BUDGET
     global COMPLEXITY_THRESHOLD, LONG_CONTEXT_CHARS, HAIKU_BAND
     global MAX_MEMORIES, SUMMARY_THRESHOLD, EXTRACTION_ENABLED
+    global EMBEDDING_MODEL, EMBEDDING_DIMENSIONS, SEARCH_TOP_K, IMPORTANCE_FLOOR, DEDUP_THRESHOLD
     global TIMEZONE, ACTIVE_HOURS, HEARTBEAT_INTERVAL, IDLE_CHECKIN_MINUTES, REMINDER_CHECK_MINUTES
     global TOOLS_ENABLED, MAX_AGENT_TURNS, COMMAND_TIMEOUT, ALLOWED_DIRECTORIES, AUTO_APPROVE_READS, AUTO_APPROVE_ALL
+    global AGENTS_LIST, AGENTS_COMMS, BINDINGS_LIST
+    global SKILL_GROCERY_ENABLED, SKILL_EXPENSES_ENABLED, SKILL_CALENDAR_ENABLED
     global NTFY_SERVER, NTFY_TOPIC, NTFY_TOKEN, NTFY_ENABLED
     global TELEGRAM_ENABLED, TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, TELEGRAM_CHAT_ID, TELEGRAM_WEBHOOK_URL
+    global WATCHER_ENABLED, WATCHER_DIRECTORIES, SPECTRE_API, WATCHER_SORT_BASE, WATCHER_DEBOUNCE
+    global FOOD_COST_WARNING, FOOD_COST_TARGET, HEALTH_SCORE_MINIMUM, ALERT_COOLDOWN_MINUTES
+    global SEARXNG_URL, WEB_FETCH_TIMEOUT, WEB_SEARCH_ENABLED
+    global DEEP_SEARCH_CACHE_TTL, DEEP_SEARCH_MAX_PAGES, DEEP_SEARCH_MAX_CHUNKS
+    global VOICE_ENABLED, OPENAI_API_KEY, VOICE_STT_MODEL, VOICE_TTS_MODEL, VOICE_TTS_VOICE
+    global OUTLOOK_CLIENT_ID, OUTLOOK_ENABLED, OUTLOOK_POLL_INTERVAL
 
     load_dotenv(SERVER_DIR / ".env", override=True)
 
@@ -143,6 +207,11 @@ def reload():
     MAX_MEMORIES = mem.get("max_memories", 200)
     SUMMARY_THRESHOLD = mem.get("summary_threshold", 30)
     EXTRACTION_ENABLED = mem.get("extraction_enabled", True)
+    EMBEDDING_MODEL = mem.get("embedding_model", "text-embedding-005")
+    EMBEDDING_DIMENSIONS = mem.get("embedding_dimensions", 768)
+    SEARCH_TOP_K = mem.get("search_top_k", 15)
+    IMPORTANCE_FLOOR = mem.get("importance_floor", 8)
+    DEDUP_THRESHOLD = mem.get("dedup_threshold", 0.9)
 
     s = _raw.get("scheduler", {})
     TIMEZONE = s.get("timezone", "America/New_York")
@@ -159,6 +228,16 @@ def reload():
     AUTO_APPROVE_READS = t.get("auto_approve_reads", True)
     AUTO_APPROVE_ALL = t.get("auto_approve_all", False)
 
+    ag = _raw.get("agents", {})
+    AGENTS_LIST = ag.get("list", [])
+    AGENTS_COMMS = ag.get("communication", {})
+    BINDINGS_LIST = _raw.get("bindings", [])
+
+    sk = _raw.get("skills", {})
+    SKILL_GROCERY_ENABLED = sk.get("grocery", {}).get("enabled", True)
+    SKILL_EXPENSES_ENABLED = sk.get("expenses", {}).get("enabled", True)
+    SKILL_CALENDAR_ENABLED = sk.get("calendar", {}).get("enabled", True)
+
     n = _raw.get("ntfy", {})
     NTFY_SERVER = os.getenv(n.get("server_env", "NTFY_SERVER"), "")
     NTFY_TOPIC = os.getenv(n.get("topic_env", "NTFY_TOPIC"), "")
@@ -171,3 +250,36 @@ def reload():
     TELEGRAM_WEBHOOK_SECRET = os.getenv(tg.get("webhook_secret_env", "TELEGRAM_WEBHOOK_SECRET"), "")
     TELEGRAM_CHAT_ID = str(tg.get("chat_id", ""))
     TELEGRAM_WEBHOOK_URL = tg.get("webhook_url", "")
+
+    w = _raw.get("watcher", {})
+    WATCHER_ENABLED = w.get("enabled", False)
+    WATCHER_DIRECTORIES = w.get("directories", [])
+    SPECTRE_API = w.get("spectre_api", "http://localhost:8000")
+    WATCHER_SORT_BASE = w.get("sort_base", "~/Documents/Sorted")
+    WATCHER_DEBOUNCE = w.get("debounce_seconds", 3)
+
+    th = _raw.get("thresholds", {})
+    FOOD_COST_WARNING = th.get("food_cost_warning", 0.50)
+    FOOD_COST_TARGET = th.get("food_cost_target", 0.45)
+    HEALTH_SCORE_MINIMUM = th.get("health_score_minimum", 60)
+    ALERT_COOLDOWN_MINUTES = th.get("alert_cooldown_minutes", 360)
+
+    wb = _raw.get("web", {})
+    SEARXNG_URL = wb.get("searxng_url", "http://localhost:8888")
+    WEB_FETCH_TIMEOUT = wb.get("fetch_timeout_seconds", 15)
+    WEB_SEARCH_ENABLED = wb.get("enabled", True)
+    DEEP_SEARCH_CACHE_TTL = wb.get("deep_search_cache_ttl_seconds", 900)
+    DEEP_SEARCH_MAX_PAGES = wb.get("deep_search_max_pages", 3)
+    DEEP_SEARCH_MAX_CHUNKS = wb.get("deep_search_max_chunks", 10)
+
+    vc = _raw.get("voice", {})
+    VOICE_ENABLED = vc.get("enabled", False)
+    OPENAI_API_KEY = os.getenv(vc.get("openai_api_key_env", "OPENAI_API_KEY"), "")
+    VOICE_STT_MODEL = vc.get("stt_model", "whisper-1")
+    VOICE_TTS_MODEL = vc.get("tts_model", "tts-1")
+    VOICE_TTS_VOICE = vc.get("tts_voice", "alloy")
+
+    ol = _raw.get("outlook", {})
+    OUTLOOK_CLIENT_ID = os.getenv(ol.get("client_id_env", "OUTLOOK_CLIENT_ID"), "")
+    OUTLOOK_ENABLED = ol.get("enabled", True)
+    OUTLOOK_POLL_INTERVAL = ol.get("poll_interval_minutes", 15)

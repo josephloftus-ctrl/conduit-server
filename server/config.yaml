@@ -29,7 +29,13 @@ models:
       role: primary
       base_url: "https://openrouter.ai/api/v1"
       api_key_env: "OPENROUTER_API_KEY"
-      default_model: "openrouter/pony-alpha"
+      default_model: "z-ai/glm-5"
+    deepseek-free:
+      type: openai_compat
+      role: fallback
+      base_url: "https://openrouter.ai/api/v1"
+      api_key_env: "OPENROUTER_API_KEY"
+      default_model: "deepseek/deepseek-r1-0528:free"
     ollama:
       type: openai_compat
       role: fallback
@@ -63,11 +69,58 @@ models:
 
   routing:
     default: "openrouter"
-    fallback_chain: ["openrouter", "nim", "ollama"]
+    fallback_chain: ["openrouter", "deepseek-free", "nim", "ollama"]
     long_context: "gemini"
     escalation: "opus"
     brain: "haiku"
     opus_daily_budget_tokens: 50000
+
+agents:
+  list:
+    - id: default
+      default: true
+      provider: openrouter
+
+    - id: researcher
+      provider: gemini
+      prompt_extend: "You specialize in web research and information synthesis."
+      tools_allow: [web_search, web_search_deep, web_fetch, read_file, grep]
+      max_turns: 15
+
+    - id: coder
+      provider: claude_code
+
+    - id: operations
+      provider: openrouter
+      prompt_extend: "You specialize in food service operations, inventory, and sales analysis."
+      tools_allow: [read_file, list_directory, glob_files, grep, parse_pdf]
+
+    - id: analyst
+      provider: opus
+      prompt_extend: "You are a data analyst. Think step by step. Be precise with numbers."
+      tools_allow: [read_file, grep, run_command]
+      max_turns: 5
+
+  communication:
+    enabled: true
+    allow: [default, researcher, coder, operations, analyst]
+    max_rounds: 5
+
+bindings:
+  - agent_id: coder
+    command: "/code"
+  - agent_id: researcher
+    command: "/research"
+  - agent_id: researcher
+    command: "/gemini"
+  - agent_id: operations
+    command: "/ops"
+  - agent_id: analyst
+    command: "/analyze"
+  - agent_id: analyst
+    command: "/opus"
+  - agent_id: analyst
+    command: "/think"
 
 classifier:
   complexity_threshold: 60
@@ -78,6 +131,11 @@ memory:
   max_memories: 200
   summary_threshold: 30
   extraction_enabled: true
+  embedding_model: "text-embedding-005"
+  embedding_dimensions: 768
+  search_top_k: 8
+  importance_floor: 9
+  dedup_threshold: 0.9
 
 scheduler:
   timezone: "America/New_York"
@@ -99,6 +157,14 @@ tools:
   auto_approve_reads: true
   auto_approve_all: false
 
+skills:
+  grocery:
+    enabled: true
+  expenses:
+    enabled: true
+  calendar:
+    enabled: true
+
 ntfy:
   server_env: "NTFY_SERVER"
   topic_env: "NTFY_TOPIC"
@@ -111,3 +177,40 @@ telegram:
   webhook_secret_env: "TELEGRAM_WEBHOOK_SECRET"
   chat_id: "8153583172"
   webhook_url: "https://conduit.josephloftus.com/api/telegram/webhook"
+
+watcher:
+  enabled: true
+  directories:
+    - path: "~/Downloads"
+      actions: ["sort", "detect_inventory", "detect_sales"]
+    - path: "~/Documents/Work/lockheed/sales/"
+      actions: ["parse_sales"]
+  spectre_api: "http://localhost:8000"
+  sort_base: "~/Documents/Sorted"
+  debounce_seconds: 3
+
+thresholds:
+  food_cost_warning: 0.50
+  food_cost_target: 0.45
+  health_score_minimum: 60
+  alert_cooldown_minutes: 360
+
+web:
+  enabled: true
+  searxng_url: "http://localhost:8888"
+  fetch_timeout_seconds: 15
+  deep_search_cache_ttl_seconds: 900
+  deep_search_max_pages: 3
+  deep_search_max_chunks: 10
+
+voice:
+  enabled: true
+  openai_api_key_env: "OPENAI_API_KEY"
+  stt_model: "whisper-1"
+  tts_model: "tts-1"
+  tts_voice: "alloy"
+
+outlook:
+  enabled: true
+  client_id_env: "OUTLOOK_CLIENT_ID"
+  poll_interval_minutes: 15
