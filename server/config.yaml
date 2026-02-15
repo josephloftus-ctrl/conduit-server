@@ -84,8 +84,8 @@ models:
       timeout: 600
 
   routing:
-    default: "glm"
-    fallback_chain: ["glm", "openrouter", "chatgpt", "deepseek-free", "nim", "minimax", "ollama"]
+    default: "openrouter"
+    fallback_chain: ["openrouter", "deepseek-free", "nim", "minimax", "ollama"]
     long_context: "gemini"
     escalation: "opus"
     brain: "haiku"
@@ -95,7 +95,7 @@ agents:
   list:
     - id: default
       default: true
-      provider: glm
+      provider: openrouter
 
     - id: researcher
       provider: gemini
