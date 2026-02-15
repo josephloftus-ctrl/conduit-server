@@ -18,6 +18,10 @@ personality:
 
 models:
   providers:
+    chatgpt:
+      type: chatgpt
+      role: primary
+      model: "gpt-5.1-codex-mini"
     nim:
       type: openai_compat
       role: primary
@@ -30,6 +34,18 @@ models:
       base_url: "https://openrouter.ai/api/v1"
       api_key_env: "OPENROUTER_API_KEY"
       default_model: "z-ai/glm-5"
+    glm:
+      type: openai_compat
+      role: primary
+      base_url: "https://integrate.api.nvidia.com/v1"
+      api_key_env: "NIM_API_KEY"
+      default_model: "z-ai/glm5"
+    minimax:
+      type: openai_compat
+      role: primary
+      base_url: "https://openrouter.ai/api/v1"
+      api_key_env: "OPENROUTER_API_KEY"
+      default_model: "minimax/minimax-m2.5"
     deepseek-free:
       type: openai_compat
       role: fallback
@@ -68,8 +84,8 @@ models:
       timeout: 600
 
   routing:
-    default: "openrouter"
-    fallback_chain: ["openrouter", "deepseek-free", "nim", "ollama"]
+    default: "chatgpt"
+    fallback_chain: ["chatgpt", "glm", "minimax", "openrouter", "deepseek-free", "nim", "ollama"]
     long_context: "gemini"
     escalation: "opus"
     brain: "haiku"
@@ -79,7 +95,7 @@ agents:
   list:
     - id: default
       default: true
-      provider: openrouter
+      provider: chatgpt
 
     - id: researcher
       provider: gemini
@@ -149,7 +165,9 @@ tools:
   max_agent_turns: 10
   command_timeout_seconds: 30
   allowed_directories:
+    - "~/.index/"
     - "~/Documents/Work/lockheed/"
+    - "~/Documents/Work/"
     - "~/Projects/spectre/"
     - "~/Projects/conduit/"
     - "~/Documents/Sorted/"
