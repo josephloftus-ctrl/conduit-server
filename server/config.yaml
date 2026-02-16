@@ -29,7 +29,7 @@ models:
       role: primary
       base_url: "https://integrate.api.nvidia.com/v1"
       api_key_env: "NIM_API_KEY"
-      default_model: "moonshotai/kimi-k2.5"
+      default_model: "z-ai/glm-5"
     openrouter:
       type: openai_compat
       role: primary
@@ -86,8 +86,8 @@ models:
       timeout: 600
 
   routing:
-    default: "openrouter"
-    fallback_chain: ["openrouter", "deepseek-free", "nim", "minimax", "ollama"]
+    default: "nim"
+    fallback_chain: ["nim", "minimax", "openrouter", "deepseek-free", "ollama"]
     long_context: "gemini"
     escalation: "opus"
     brain: "haiku"
