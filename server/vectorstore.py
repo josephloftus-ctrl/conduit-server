@@ -72,6 +72,10 @@ async def upsert_memory(doc_id: str, category: str, content: str,
         "access_count": 0,
     })
 
+    # Write-through to BM25 index
+    from . import memory_index
+    memory_index.upsert(doc_id, content, category)
+
 
 async def vector_search(query_embedding: list[float],
                         top_k: int | None = None) -> list[dict]:
@@ -360,6 +364,10 @@ async def delete(doc_id: str):
     try:
         doc_ref = _db.collection(COLLECTION).document(doc_id)
         await doc_ref.delete()
+
+        # Delete from BM25 index
+        from . import memory_index
+        memory_index.delete(doc_id)
     except Exception as e:
         log.error("Delete failed for %s: %s", doc_id, e)
 
