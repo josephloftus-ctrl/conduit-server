@@ -72,6 +72,7 @@ class ClaudeCodeProvider(BaseProvider):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=self.working_dir,
+            limit=1024 * 1024,  # 1MB line buffer (default 64KB too small for large tool results)
         )
 
         full_text_parts: list[str] = []

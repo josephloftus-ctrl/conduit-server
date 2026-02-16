@@ -11,6 +11,11 @@
   let saving = $state(false);
   let testResult = $state(null);
 
+  // ChatGPT OAuth flow state
+  let chatgptFlow = $state(null);  // {user_code, verification_uri, device_code}
+  let chatgptPolling = $state(false);
+  let chatgptPollTimer = null;
+
   // Editable copies
   let personalityName = $state('');
   let personalityPrompt = $state('');
@@ -49,7 +54,7 @@
   });
 
   $effect(() => {
-    if (open && !settings) loadAll();
+    if (open) loadAll();
   });
 
   async function loadAll() {
@@ -91,16 +96,23 @@
     loading = false;
   }
 
+  let saveToastTimer = null;
   async function save(endpoint, data) {
     saving = true;
     try {
-      await fetch(endpoint, {
+      const res = await fetch(endpoint, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
       });
-      testResult = { ok: true, message: 'Saved' };
-      setTimeout(() => testResult = null, 2000);
+      const body = await res.json().catch(() => ({}));
+      if (res.ok && body.ok !== false) {
+        testResult = { ok: true, message: 'Saved' };
+      } else {
+        testResult = { ok: false, message: body.error || `Save failed (${res.status})` };
+      }
+      clearTimeout(saveToastTimer);
+      saveToastTimer = setTimeout(() => testResult = null, 2000);
     } catch (e) {
       testResult = { ok: false, message: 'Save failed: ' + e.message };
     }
@@ -137,6 +149,51 @@
     memories = memories.filter(m => m.id !== id);
   }
 
+  async function startChatGPTAuth() {
+    try {
+      const r = await fetch('/api/chatgpt/auth/start', { method: 'POST' });
+      const data = await r.json();
+      if (data.ok) {
+        chatgptFlow = data;
+        chatgptPolling = true;
+        pollChatGPTAuth(data.device_code, data.interval || 5);
+      } else {
+        testResult = { ok: false, message: 'Auth start failed: ' + (data.error || 'unknown') };
+      }
+    } catch (e) {
+      testResult = { ok: false, message: 'Auth start failed: ' + e.message };
+    }
+  }
+
+  function pollChatGPTAuth(deviceCode, interval) {
+    clearInterval(chatgptPollTimer);
+    chatgptPollTimer = setInterval(async () => {
+      try {
+        const r = await fetch('/api/chatgpt/auth/poll', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ device_code: deviceCode }),
+        });
+        const data = await r.json();
+        if (data.status === 'complete') {
+          clearInterval(chatgptPollTimer);
+          chatgptFlow = null;
+          chatgptPolling = false;
+          testResult = { ok: true, message: 'ChatGPT authenticated!' };
+          loadAll();
+        } else if (data.status === 'expired' || data.status === 'error') {
+          clearInterval(chatgptPollTimer);
+          chatgptFlow = null;
+          chatgptPolling = false;
+          testResult = { ok: false, message: data.error || 'Auth flow expired' };
+        }
+        // 'pending' and 'slow_down' — keep polling
+      } catch {
+        // Network error — keep polling
+      }
+    }, interval * 1000);
+  }
+
   function formatTokens(n) {
     if (!n) return '0';
     if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
@@ -146,11 +203,12 @@
 </script>
 
 {#if open}
-<div class="settings-overlay" onclick={() => open = false}></div>
+<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+<div class="settings-overlay" role="presentation" onclick={() => open = false}></div>
 <div class="settings-panel">
   <div class="settings-header">
     <h2>Settings</h2>
-    <button class="close-btn" onclick={() => open = false}>
+    <button class="close-btn" onclick={() => open = false} aria-label="Close settings">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <line x1="18" y1="6" x2="6" y2="18"></line>
         <line x1="6" y1="6" x2="18" y2="18"></line>
@@ -184,25 +242,89 @@
                 <strong>{name}</strong>
                 <span class="badge">{prov.role || 'unknown'}</span>
                 <span class="badge" class:ok={prov.has_key} class:warn={!prov.has_key}>
-                  {prov.has_key ? 'configured' : 'no key'}
+                  {#if prov.type === 'chatgpt'}
+                    {prov.has_key ? 'authenticated' : 'not connected'}
+                  {:else if prov.auth_method === 'vertex'}
+                    {prov.has_key ? 'vertex' : 'no project'}
+                  {:else if prov.auth_method === 'cli'}
+                    {prov.has_key ? 'installed' : 'not found'}
+                  {:else}
+                    {prov.has_key ? 'configured' : 'no key'}
+                  {/if}
                 </span>
               </div>
               <div class="card-body">
                 <div class="field">
-                  <label>Model</label>
+                  <span class="field-label">Model</span>
                   <span class="value">{prov.model || prov.default_model || '-'}</span>
                 </div>
-                {#if prov.base_url}
+                {#if prov.type === 'chatgpt'}
+                  {#if prov.auth?.authenticated}
+                    {#if prov.auth.email}
+                      <div class="field">
+                        <span class="field-label">Account</span>
+                        <span class="value">{prov.auth.email}</span>
+                      </div>
+                    {/if}
+                    {#if prov.auth.plan}
+                      <div class="field">
+                        <span class="field-label">Plan</span>
+                        <span class="value" style="text-transform:capitalize">{prov.auth.plan}</span>
+                      </div>
+                    {/if}
+                    <div class="btn-row">
+                      <button class="btn-sm" onclick={() => testProvider(name)}>Test</button>
+                      <button class="btn-sm" onclick={startChatGPTAuth}>Re-authenticate</button>
+                    </div>
+                  {:else}
+                    {#if chatgptFlow}
+                      <div class="oauth-flow">
+                        <div class="field">
+                          <span class="field-label">Code</span>
+                          <span class="value mono" style="font-size:18px;font-weight:600;letter-spacing:2px">{chatgptFlow.user_code}</span>
+                        </div>
+                        <div class="hint" style="margin-top:4px">
+                          Go to <a href={chatgptFlow.verification_uri} target="_blank" rel="noopener">{chatgptFlow.verification_uri}</a> and enter the code above
+                        </div>
+                        {#if chatgptPolling}
+                          <div class="hint" style="color:var(--accent)">Waiting for authorization...</div>
+                        {/if}
+                      </div>
+                    {:else}
+                      <button class="btn" onclick={startChatGPTAuth}>Authenticate with ChatGPT</button>
+                    {/if}
+                  {/if}
+                {:else if prov.auth_method === 'vertex'}
                   <div class="field">
-                    <label>URL</label>
-                    <span class="value mono">{prov.base_url}</span>
+                    <span class="field-label">Auth</span>
+                    <span class="value">GCP Vertex AI</span>
                   </div>
+                  {#if prov.gcp_project}
+                    <div class="field">
+                      <span class="field-label">Project</span>
+                      <span class="value mono">{prov.gcp_project}</span>
+                    </div>
+                  {/if}
+                  <button class="btn-sm" onclick={() => testProvider(name)}>Test</button>
+                {:else if prov.auth_method === 'cli'}
+                  <div class="field">
+                    <span class="field-label">Auth</span>
+                    <span class="value">Claude CLI</span>
+                  </div>
+                  <button class="btn-sm" onclick={() => testProvider(name)}>Test</button>
+                {:else}
+                  {#if prov.base_url}
+                    <div class="field">
+                      <span class="field-label">URL</span>
+                      <span class="value mono">{prov.base_url}</span>
+                    </div>
+                  {/if}
+                  <div class="field">
+                    <span class="field-label">API Key</span>
+                    <span class="value mono">{prov.api_key_masked || 'not set'}</span>
+                  </div>
+                  <button class="btn-sm" onclick={() => testProvider(name)}>Test</button>
                 {/if}
-                <div class="field">
-                  <label>API Key</label>
-                  <span class="value mono">{prov.api_key_masked || 'not set'}</span>
-                </div>
-                <button class="btn-sm" onclick={() => testProvider(name)}>Test</button>
               </div>
             </div>
           {/each}
@@ -212,8 +334,8 @@
     {:else if activeTab === 'routing'}
       <div class="section">
         <div class="form-group">
-          <label>Default Provider</label>
-          <select bind:value={routingDefault}>
+          <label for="routing-default">Default Provider</label>
+          <select id="routing-default" bind:value={routingDefault}>
             {#if settings?.providers}
               {#each Object.keys(settings.providers) as name}
                 <option value={name}>{name}</option>
@@ -222,22 +344,24 @@
           </select>
         </div>
         <div class="form-group">
-          <label>Opus Daily Budget (tokens)</label>
-          <input type="number" bind:value={routingBudget} min="0" step="10000" />
+          <label for="routing-budget">Opus Daily Budget (tokens)</label>
+          <input id="routing-budget" type="number" bind:value={routingBudget} min="0" step="10000" />
         </div>
         <div class="form-group">
-          <label>Complexity Threshold (0-100)</label>
-          <input type="range" bind:value={complexityThreshold} min="0" max="100" />
+          <label for="routing-complexity">Complexity Threshold (0-100)</label>
+          <input id="routing-complexity" type="range" bind:value={complexityThreshold} min="0" max="100" />
           <span class="range-value">{complexityThreshold}</span>
         </div>
         <div class="form-group">
-          <label>Long Context Threshold (chars)</label>
-          <input type="number" bind:value={longContextChars} min="500" step="500" />
+          <label for="routing-longctx">Long Context Threshold (chars)</label>
+          <input id="routing-longctx" type="number" bind:value={longContextChars} min="500" step="500" />
         </div>
         <button class="btn" disabled={saving}
           onclick={() => save('/api/settings/routing', {
             default: routingDefault,
             opus_daily_budget_tokens: routingBudget,
+            complexity_threshold: complexityThreshold,
+            long_context_chars: longContextChars,
           })}
         >Save Routing</button>
       </div>
@@ -245,12 +369,12 @@
     {:else if activeTab === 'personality'}
       <div class="section">
         <div class="form-group">
-          <label>Name</label>
-          <input type="text" bind:value={personalityName} />
+          <label for="personality-name">Name</label>
+          <input id="personality-name" type="text" bind:value={personalityName} />
         </div>
         <div class="form-group">
-          <label>System Prompt Template</label>
-          <textarea bind:value={personalityPrompt} rows="10"></textarea>
+          <label for="personality-prompt">System Prompt Template</label>
+          <textarea id="personality-prompt" bind:value={personalityPrompt} rows="10"></textarea>
           <div class="hint">Variables: {'{name}'}, {'{time}'}, {'{date}'}, {'{day}'}, {'{memories}'}, {'{pending_tasks}'}, {'{tools_context}'}</div>
         </div>
         <button class="btn" disabled={saving}
@@ -270,16 +394,16 @@
           </label>
         </div>
         <div class="form-group">
-          <label>Max Agent Turns</label>
-          <input type="number" bind:value={maxAgentTurns} min="1" max="20" />
+          <label for="tools-turns">Max Agent Turns</label>
+          <input id="tools-turns" type="number" bind:value={maxAgentTurns} min="1" max="20" />
         </div>
         <div class="form-group">
-          <label>Command Timeout (seconds)</label>
-          <input type="number" bind:value={commandTimeout} min="5" max="120" />
+          <label for="tools-timeout">Command Timeout (seconds)</label>
+          <input id="tools-timeout" type="number" bind:value={commandTimeout} min="5" max="120" />
         </div>
         <div class="form-group">
-          <label>Allowed Directories (one per line)</label>
-          <textarea bind:value={allowedDirs} rows="5" placeholder="~/Documents/Work/&#10;~/Projects/"></textarea>
+          <label for="tools-dirs">Allowed Directories (one per line)</label>
+          <textarea id="tools-dirs" bind:value={allowedDirs} rows="5" placeholder="~/Documents/Work/&#10;~/Projects/"></textarea>
         </div>
         <button class="btn" disabled={saving}
           onclick={() => save('/api/settings/tools', {
@@ -294,20 +418,20 @@
     {:else if activeTab === 'schedule'}
       <div class="section">
         <div class="form-group">
-          <label>Active Hours</label>
+          <label for="sched-hours-start">Active Hours</label>
           <div class="inline">
-            <input type="number" bind:value={activeHoursStart} min="0" max="23" style="width:60px" />
+            <input id="sched-hours-start" type="number" bind:value={activeHoursStart} min="0" max="23" style="width:60px" />
             <span>to</span>
-            <input type="number" bind:value={activeHoursEnd} min="0" max="23" style="width:60px" />
+            <input id="sched-hours-end" type="number" bind:value={activeHoursEnd} min="0" max="23" style="width:60px" />
           </div>
         </div>
         <div class="form-group">
-          <label>Heartbeat Interval (minutes)</label>
-          <input type="number" bind:value={heartbeatInterval} min="5" max="120" />
+          <label for="sched-heartbeat">Heartbeat Interval (minutes)</label>
+          <input id="sched-heartbeat" type="number" bind:value={heartbeatInterval} min="5" max="120" />
         </div>
         <div class="form-group">
-          <label>Idle Check-in After (minutes)</label>
-          <input type="number" bind:value={idleCheckin} min="5" max="480" />
+          <label for="sched-idle">Idle Check-in After (minutes)</label>
+          <input id="sched-idle" type="number" bind:value={idleCheckin} min="5" max="480" />
         </div>
         <button class="btn" disabled={saving}
           onclick={() => save('/api/settings/scheduler', {
@@ -327,12 +451,12 @@
           </label>
         </div>
         <div class="form-group">
-          <label>Max Memories</label>
-          <input type="number" bind:value={maxMemories} min="10" max="1000" />
+          <label for="mem-max">Max Memories</label>
+          <input id="mem-max" type="number" bind:value={maxMemories} min="10" max="1000" />
         </div>
         <div class="form-group">
-          <label>Summary Threshold (messages)</label>
-          <input type="number" bind:value={summaryThreshold} min="10" max="100" />
+          <label for="mem-summary">Summary Threshold (messages)</label>
+          <input id="mem-summary" type="number" bind:value={summaryThreshold} min="10" max="100" />
         </div>
         <button class="btn" disabled={saving}
           onclick={() => save('/api/settings/memory', {
@@ -365,12 +489,12 @@
           </label>
         </div>
         <div class="form-group">
-          <label>ntfy Server</label>
-          <input type="text" bind:value={ntfyServer} placeholder="https://ntfy.example.com" />
+          <label for="ntfy-server">ntfy Server</label>
+          <input id="ntfy-server" type="text" bind:value={ntfyServer} placeholder="https://ntfy.example.com" />
         </div>
         <div class="form-group">
-          <label>Topic</label>
-          <input type="text" bind:value={ntfyTopic} placeholder="conduit" />
+          <label for="ntfy-topic">Topic</label>
+          <input id="ntfy-topic" type="text" bind:value={ntfyTopic} placeholder="conduit" />
         </div>
         <div class="btn-row">
           <button class="btn" disabled={saving}
@@ -566,7 +690,7 @@
     gap: 8px;
     font-size: 13px;
   }
-  .field label {
+  .field-label {
     color: var(--text-dim);
     min-width: 60px;
   }

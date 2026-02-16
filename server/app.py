@@ -5,7 +5,7 @@ import json
 import logging
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, Request, UploadFile, WebSocket, WebSocketDisconnect
@@ -43,6 +43,7 @@ def _build_providers():
     from .models.gemini import GeminiProvider
     from .models.anthropic import AnthropicProvider
     from .models.claude_code import ClaudeCodeProvider
+    from .models.chatgpt import ChatGPTProvider
 
     providers.clear()
 
@@ -81,6 +82,15 @@ def _build_providers():
                 api_key=api_key,
                 model=prov_cfg.get("model", "claude-opus-4-6"),
             )
+        elif ptype == "chatgpt":
+            from .chatgpt_auth import is_authenticated
+            if is_authenticated():
+                providers[name] = ChatGPTProvider(
+                    name=name,
+                    model=prov_cfg.get("model", "gpt-5.1-codex-mini"),
+                )
+            else:
+                log.warning("ChatGPT provider '%s' skipped — not authenticated", name)
         elif ptype == "claude_code":
             providers[name] = ClaudeCodeProvider(
                 name=name,
@@ -112,6 +122,7 @@ def render_system_prompt() -> str:
         memories=memory_context,
         pending_tasks=pending,
         tools_context="",
+        scout_context="",
     )
     return prompt
 
@@ -150,8 +161,10 @@ async def render_system_prompt_async(query: str = "") -> str:
     if config.TOOLS_ENABLED and config.ALLOWED_DIRECTORIES:
         lines = ["You have access to tools that can read and search files. Available directories:"]
         dir_descriptions = {
-            "~/Documents/Work/lockheed/": "sales PDFs, inventory files",
-            "~/Projects/spectre/": "operations dashboard code",
+            "~/.index/": "file index — read MANIFEST.md first for directory map",
+            "~/Documents/Work/lockheed/": "LM100 operations (sales, inventory, purchasing, reports, catering)",
+            "~/Documents/Work/": "work files (training, compliance, reference, receipts)",
+            "~/Projects/spectre/": "inventory operations dashboard code",
             "~/Projects/conduit/": "this project's source code",
             "~/Documents/Sorted/": "auto-sorted downloads",
         }
@@ -168,6 +181,31 @@ async def render_system_prompt_async(query: str = "") -> str:
             lines.append("You can read the user's Outlook inbox using read_inbox, search_email, and read_email tools.")
         tools_context = "\n".join(lines)
 
+    # Build scout context from Reddit Scout report
+    scout_context = ""
+    scout_report_path = Path.home() / "conduit" / "server" / "data" / "scout_report.json"
+    try:
+        if scout_report_path.exists():
+            report_age = (datetime.now() - datetime.fromtimestamp(scout_report_path.stat().st_mtime))
+            if report_age < timedelta(hours=48):
+                with open(scout_report_path) as f:
+                    report = json.load(f)
+                high_findings = [
+                    f for f in report.get("findings", [])
+                    if f.get("relevance_score", 0) >= 7
+                ][:5]
+                if high_findings:
+                    lines = ["Recent AI/dev findings relevant to your architecture:"]
+                    for f in high_findings:
+                        lines.append(
+                            f"- [{f.get('component', '?')}] {f.get('summary', '')} "
+                            f"({f.get('effort', '?')} effort, relevance {f.get('relevance_score', 0)}/10)"
+                        )
+                    lines.append("Reference these when the user asks about improvements or new features.")
+                    scout_context = "\n".join(lines)
+    except Exception as e:
+        log.warning("Failed to load scout report: %s", e)
+
     prompt = template.format(
         name=config.PERSONALITY_NAME,
         time=now.strftime("%I:%M %p"),
@@ -176,6 +214,7 @@ async def render_system_prompt_async(query: str = "") -> str:
         memories=memory_context,
         pending_tasks=pending,
         tools_context=tools_context,
+        scout_context=scout_context,
     )
     return prompt
 
@@ -584,7 +623,9 @@ async def handle_message(ws: WebSocket, data: dict, conversation_id: str):
             await manager.send_error(ws, f"All providers failed: {e}")
             return
 
+    log.info("Sending 'done' to client for conversation %s", conversation_id)
     await manager.send_done(ws)
+    log.info("'done' sent successfully")
 
     # Send meta info
     if usage:
@@ -624,8 +665,15 @@ async def handle_command(ws: WebSocket, content: str, conversation_id: str) -> b
 
     if cmd == "/clear":
         new_id = await db.create_conversation()
+        # Update server session to use the new conversation
+        ws.conversation_id = new_id
         await manager.send_chunk(ws, "Conversation cleared.")
         await manager.send_done(ws)
+        # Tell client to switch to the new conversation
+        await manager.send(ws, {
+            "type": "conversation_changed",
+            "conversation_id": new_id,
+        })
         return True
 
     if cmd == "/models":
@@ -886,7 +934,15 @@ async def api_set_routing(body: dict):
     for key in ("default", "fallback_chain", "long_context", "escalation", "brain", "opus_daily_budget_tokens"):
         if key in body:
             routing[key] = body[key]
+    # Classifier fields are stored under a separate YAML section but exposed on the routing tab
+    classifier_keys = ("complexity_threshold", "long_context_chars")
+    if any(k in body for k in classifier_keys):
+        classifier = cfg.setdefault("classifier", {})
+        for key in classifier_keys:
+            if key in body:
+                classifier[key] = body[key]
     save_config(cfg)
+    config.reload()
     return {"ok": True}
 
 
@@ -999,6 +1055,43 @@ async def api_test_provider(name: str):
         return {"ok": False, "error": str(e)}
 
 
+# --- ChatGPT OAuth endpoints ---
+
+@app.get("/api/chatgpt/auth/status")
+async def api_chatgpt_auth_status():
+    from .chatgpt_auth import get_auth_info
+    return get_auth_info()
+
+
+@app.post("/api/chatgpt/auth/start")
+async def api_chatgpt_auth_start():
+    from .chatgpt_auth import initiate_device_flow
+    flow = initiate_device_flow()
+    if not flow:
+        return {"ok": False, "error": "Failed to initiate device flow"}
+    return {
+        "ok": True,
+        "user_code": flow.get("user_code", ""),
+        "verification_uri": flow.get("verification_uri", ""),
+        "verification_uri_complete": flow.get("verification_uri_complete", ""),
+        "device_code": flow.get("device_code", ""),
+        "interval": flow.get("interval", 5),
+        "expires_in": flow.get("expires_in", 900),
+    }
+
+
+@app.post("/api/chatgpt/auth/poll")
+async def api_chatgpt_auth_poll(body: dict):
+    from .chatgpt_auth import poll_device_flow
+    device_code = body.get("device_code", "")
+    if not device_code:
+        return {"ok": False, "error": "Missing device_code"}
+    result = poll_device_flow(device_code)
+    if result["status"] == "complete":
+        _build_providers()
+    return result
+
+
 # --- Voice endpoints ---
 
 @app.post("/api/voice/transcribe")
@@ -1075,8 +1168,8 @@ async def websocket_endpoint(ws: WebSocket):
     await manager.connect(ws)
     await manager.send_hello(ws)
 
-    # Each WS connection gets a conversation
-    conversation_id = await db.create_conversation()
+    # Each WS connection gets a conversation — stored on ws for shared mutation
+    ws.conversation_id = await db.create_conversation()
     # Track active message task so the receive loop stays free for
     # permission_response and other control messages.
     active_task: asyncio.Task | None = None
@@ -1108,14 +1201,14 @@ async def websocket_endpoint(ws: WebSocket):
                     await manager.send_error(ws, "Still processing previous message")
                     continue
                 active_task = asyncio.create_task(
-                    handle_message(ws, data, conversation_id)
+                    handle_message(ws, data, ws.conversation_id)
                 )
                 active_task.add_done_callback(_on_message_done)
 
             elif msg_type == "set_conversation":
                 new_cid = data.get("conversation_id")
                 if new_cid:
-                    conversation_id = new_cid
+                    ws.conversation_id = new_cid
 
             elif msg_type == "permission_response":
                 manager.resolve_permission(
@@ -1142,3 +1235,12 @@ async def websocket_endpoint(ws: WebSocket):
 WEB_DIST = Path(__file__).parent.parent / "web" / "dist"
 if WEB_DIST.exists():
     app.mount("/", StaticFiles(directory=str(WEB_DIST), html=True), name="web")
+
+
+@app.middleware("http")
+async def add_cache_headers(request: Request, call_next):
+    """Prevent browser caching of index.html so new builds are picked up immediately."""
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.endswith(".html"):
+        response.headers["Cache-Control"] = "no-store, must-revalidate"
+    return response

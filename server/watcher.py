@@ -17,11 +17,15 @@ from typing import Any
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
+import yaml
+
 from . import config, db, ntfy, spectre
 from . import telegram as tg_module
 from .ws import ConnectionManager
 
 log = logging.getLogger("conduit.watcher")
+
+INDEX_DIR = Path.home() / ".index" / "domains"
 
 # Extensions we care about
 EXCEL_EXTENSIONS = {".xlsx", ".xls"}
@@ -50,6 +54,40 @@ _loop: asyncio.AbstractEventLoop | None = None
 
 def _sort_base() -> Path:
     return Path(os.path.expanduser(config.WATCHER_SORT_BASE))
+
+
+# ---------------------------------------------------------------------------
+# Index update helper
+# ---------------------------------------------------------------------------
+
+def _update_index(filepath: Path, summary: str, domain: str = "work-lockheed"):
+    """Append a file entry to the relevant domain YAML index."""
+    yaml_path = INDEX_DIR / f"{domain}.yaml"
+    if not yaml_path.exists():
+        return
+
+    try:
+        data = yaml.safe_load(yaml_path.read_text()) or {}
+        base = data.get("base", "")
+        # Make path relative to the domain base
+        base_expanded = Path(os.path.expanduser(base))
+        try:
+            rel = str(filepath.relative_to(base_expanded))
+        except ValueError:
+            rel = str(filepath)
+
+        files = data.setdefault("files", {})
+        files[rel] = {
+            "summary": summary,
+            "type": filepath.suffix.lstrip("."),
+            "added": datetime.now().strftime("%Y-%m-%d"),
+        }
+        data["updated"] = datetime.now().strftime("%Y-%m-%d")
+
+        yaml_path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
+        log.debug("Index updated: %s -> %s", rel, domain)
+    except Exception as e:
+        log.debug("Index update failed: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +323,7 @@ async def process_file(filepath: Path, actions: list[str]):
                     if not dest.exists():
                         shutil.move(str(filepath), str(dest))
                         log.info("Moved sales PDF to %s", dest)
+                        _update_index(dest, f"Financial Detail Report — {summary}", "work-lockheed")
                 return
 
     # 3. Sort work files
@@ -304,6 +343,7 @@ async def process_file(filepath: Path, actions: list[str]):
 
             shutil.move(str(filepath), str(dest))
             log.info("Sorted %s -> %s/", filepath.name, category)
+            _update_index(dest, f"Auto-sorted: {filepath.name}", "work-general")
             await _notify_all(
                 "File Sorted",
                 f"Sorted {filepath.name} -> {category}/",

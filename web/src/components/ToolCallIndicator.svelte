@@ -26,7 +26,7 @@
 
   let icon = $derived(TOOL_ICONS[toolCall.name] || 'tool');
 
-  let summary = $derived(() => {
+  let summary = $derived.by(() => {
     const args = toolCall.arguments || {};
     if (args.path) return args.path;
     if (args.file_path) return args.file_path;
@@ -37,7 +37,7 @@
     return '';
   });
 
-  let displayResult = $derived(() => {
+  let displayResult = $derived.by(() => {
     if (toolCall.error) return toolCall.error;
     if (toolCall.result) {
       return toolCall.result.length > 500
@@ -81,8 +81,8 @@
     </span>
 
     <span class="tool-name">{toolCall.name}</span>
-    {#if summary()}
-      <span class="tool-args">{summary()}</span>
+    {#if summary}
+      <span class="tool-args">{summary}</span>
     {/if}
 
     <span class="tool-status">
@@ -107,9 +107,9 @@
     </span>
   </button>
 
-  {#if expanded && displayResult()}
+  {#if expanded && displayResult}
     <div class="tool-result">
-      <pre>{displayResult()}</pre>
+      <pre>{displayResult}</pre>
     </div>
   {/if}
 </div>

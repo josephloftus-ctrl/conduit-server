@@ -28,7 +28,11 @@ class ConnectionManager:
 
     async def send(self, ws: WebSocket, msg: dict):
         """Send a typed JSON message to one client."""
-        await ws.send_json(msg)
+        try:
+            await ws.send_json(msg)
+        except Exception as e:
+            log.error("Failed to send WS message type=%s: %s", msg.get("type"), e)
+            raise
 
     async def broadcast(self, msg: dict):
         """Send a message to all connected clients."""

@@ -1,6 +1,6 @@
 <script>
   import { conversations, currentConversationId, switchConversation, newConversation, loadConversations, renameConversation, deleteConversation } from '../lib/stores/chat.js';
-  import { onMount } from 'svelte';
+  import { onDestroy } from 'svelte';
 
   let { open = $bindable(false), onOpenSettings } = $props();
 
@@ -9,10 +9,6 @@
   let editValue = $state('');
   let confirmDeleteId = $state(null);
   let confirmTimeout = null;
-
-  onMount(() => {
-    loadConversations();
-  });
 
   // Filter conversations by search query
   let filtered = $derived(
@@ -86,6 +82,8 @@
     else if (e.key === 'Escape') { e.preventDefault(); cancelEdit(); }
   }
 
+  let longPressTimer = null;
+
   function handleDelete(id) {
     if (confirmDeleteId === id) {
       // Second click — delete
@@ -99,6 +97,25 @@
       confirmTimeout = setTimeout(() => { confirmDeleteId = null; }, 3000);
     }
   }
+
+  function handleTouchStart(conv) {
+    longPressTimer = setTimeout(() => {
+      longPressTimer = null;
+      startEdit(conv);
+    }, 500);
+  }
+
+  function handleTouchEnd() {
+    if (longPressTimer) {
+      clearTimeout(longPressTimer);
+      longPressTimer = null;
+    }
+  }
+
+  onDestroy(() => {
+    clearTimeout(confirmTimeout);
+    clearTimeout(longPressTimer);
+  });
 
   function formatDate(ts) {
     if (!ts) return '';
@@ -134,6 +151,7 @@
           class:active={$currentConversationId === conv.id}
         >
           {#if editingId === conv.id}
+            <!-- svelte-ignore a11y_autofocus -->
             <input
               class="edit-input"
               type="text"
@@ -147,6 +165,9 @@
               class="conv-btn"
               onclick={() => handleSelect(conv.id)}
               ondblclick={() => startEdit(conv)}
+              ontouchstart={() => handleTouchStart(conv)}
+              ontouchend={handleTouchEnd}
+              ontouchcancel={handleTouchEnd}
             >
               <span class="conv-title">{conv.title}</span>
               <span class="conv-date">{formatDate(conv.updated_at)}</span>
@@ -200,14 +221,15 @@
     flex-direction: column;
     flex-shrink: 0;
     height: 100%;
-    transition: margin-left 0.2s ease;
-    margin-left: -280px;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+    will-change: transform;
     z-index: 20;
     position: absolute;
   }
 
   .sidebar.open {
-    margin-left: 0;
+    transform: translateX(0);
   }
 
   @media (min-width: 768px) {
@@ -215,7 +237,7 @@
       position: relative;
     }
     .sidebar.open {
-      margin-left: 0;
+      transform: translateX(0);
     }
   }
 
@@ -345,8 +367,13 @@
     flex-shrink: 0;
     transition: color 0.15s, background 0.15s;
   }
-  .conv-item:hover .delete-btn {
+  .conv-item:hover .delete-btn,
+  .conv-item.active .delete-btn {
     display: flex;
+  }
+  /* Always show on touch devices */
+  @media (pointer: coarse) {
+    .delete-btn { display: flex; }
   }
   .delete-btn:hover {
     background: var(--bg-hover);

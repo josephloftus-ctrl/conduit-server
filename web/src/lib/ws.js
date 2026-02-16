@@ -15,10 +15,14 @@ export function createWebSocket(url, handlers) {
   let timeoutId = null;
   let pingId = null;
   let intentionalClose = false;
+  let reconnectTimerId = null;
+  // Prevents timeout + onclose from both calling handleDisconnect
+  let disconnectHandled = false;
 
   function connect() {
     cleanup();
     intentionalClose = false;
+    disconnectHandled = false;
 
     handlers.onStateChange?.('connecting');
     ws = new WebSocket(url);
@@ -26,6 +30,8 @@ export function createWebSocket(url, handlers) {
     // Connection timeout
     timeoutId = setTimeout(() => {
       if (ws && ws.readyState !== WebSocket.OPEN) {
+        intentionalClose = true;
+        disconnectHandled = true;
         ws.close();
         handleDisconnect();
       }
@@ -44,7 +50,11 @@ export function createWebSocket(url, handlers) {
           handlers.onStateChange?.('ready');
           startPing();
         }
-        handlers.onMessage?.(msg);
+        try {
+          handlers.onMessage?.(msg);
+        } catch (handlerErr) {
+          console.error('WS message handler error:', handlerErr, 'for message type:', msg.type);
+        }
       } catch (e) {
         console.error('WS parse error:', e);
       }
@@ -57,7 +67,8 @@ export function createWebSocket(url, handlers) {
     ws.onclose = () => {
       clearTimeout(timeoutId);
       clearInterval(pingId);
-      if (!intentionalClose) {
+      if (!intentionalClose && !disconnectHandled) {
+        disconnectHandled = true;
         handleDisconnect();
       }
     };
@@ -78,19 +89,19 @@ export function createWebSocket(url, handlers) {
     const jitter = Math.random() * capped * 0.3;
     const delay = capped + jitter;
 
-    setTimeout(connect, delay);
+    // Clear any existing reconnect timer to prevent duplicates
+    clearTimeout(reconnectTimerId);
+    reconnectTimerId = setTimeout(connect, delay);
   }
 
   function startPing() {
     clearInterval(pingId);
     pingId = setInterval(() => {
       if (ws && ws.readyState === WebSocket.OPEN) {
-        // WebSocket API doesn't have native ping, send a keep-alive
-        // Server will ignore unknown types gracefully
         try {
           ws.send(JSON.stringify({ type: 'ping' }));
         } catch {
-          handleDisconnect();
+          // Don't call handleDisconnect here — onclose will fire
         }
       }
     }, PING_INTERVAL);
@@ -99,7 +110,9 @@ export function createWebSocket(url, handlers) {
   function send(msg) {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(msg));
+      return true;
     }
+    return false;
   }
 
   function disconnect() {
@@ -114,6 +127,7 @@ export function createWebSocket(url, handlers) {
 
   function cleanup() {
     clearTimeout(timeoutId);
+    clearTimeout(reconnectTimerId);
     clearInterval(pingId);
   }
 

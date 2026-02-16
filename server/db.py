@@ -232,7 +232,7 @@ async def get_usage_by_provider(days: int = 7) -> list[dict]:
             "SUM(input_tokens) as total_input, SUM(output_tokens) as total_output, "
             "COUNT(*) as request_count "
             "FROM model_usage WHERE created_at >= ? "
-            "GROUP BY provider ORDER BY total_output DESC",
+            "GROUP BY provider, model ORDER BY total_output DESC",
             (cutoff,),
         )
         return [dict(r) for r in rows]
@@ -343,15 +343,30 @@ async def get_conversation_summaries(conversation_id: str) -> list[dict]:
 
 
 async def get_recent_conversations_with_summaries(limit: int = 5) -> list[dict]:
-    """Get recent conversations with their summaries (for heartbeat context)."""
+    """Get recent conversations with summaries or message snippets.
+
+    Returns ALL recent conversations, not just those with summaries.
+    For conversations without a summary, uses the last few messages as context.
+    """
     convs = await list_conversations(limit=limit)
     result = []
     for c in convs:
         summaries = await get_conversation_summaries(c["id"])
         if summaries:
-            result.append({
-                "title": c["title"],
-                "summary": summaries[-1]["summary"] if summaries else "",
-                "updated_at": c["updated_at"],
-            })
+            summary = summaries[-1]["summary"]
+        else:
+            # Fallback: grab last 3 messages as a snippet
+            msgs = await get_messages(c["id"], limit=3)
+            if not msgs:
+                continue
+            snippet_parts = []
+            for m in msgs:
+                text = m["content"][:120].replace("\n", " ")
+                snippet_parts.append(f"[{m['role']}] {text}")
+            summary = " → ".join(snippet_parts)
+        result.append({
+            "title": c["title"],
+            "summary": summary,
+            "updated_at": c["updated_at"],
+        })
     return result

@@ -1,6 +1,8 @@
 <script>
   import { connectionState } from '../lib/stores/connection.js';
-  import { lastMeta, voiceMode, stopSpeaking } from '../lib/stores/chat.js';
+  import { lastMeta, voiceMode, stopSpeaking, isStreaming } from '../lib/stores/chat.js';
+
+  const BUILD_ID = 'v11';
 
   function toggleVoice() {
     voiceMode.update(v => {
@@ -43,6 +45,8 @@
     {#if $lastMeta}
       <span class="model-indicator">{$lastMeta.model?.split('/').pop() || ''}</span>
     {/if}
+
+    <span class="build-id">{BUILD_ID}{$isStreaming ? ' [S]' : ''}</span>
 
     <div class="status" style="color: {statusColor}">
       <span class="dot" style="background: {statusColor}"></span>
@@ -118,6 +122,12 @@
     background: var(--bg-hover);
     border-radius: 4px;
     color: var(--text-dim);
+  }
+
+  .build-id {
+    font-size: 10px;
+    color: var(--text-muted);
+    opacity: 0.5;
   }
 
   .status {

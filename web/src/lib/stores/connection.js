@@ -32,7 +32,7 @@ export function connect(url) {
 }
 
 export function send(msg) {
-  client?.send(msg);
+  return client?.send(msg) ?? false;
 }
 
 export function disconnect() {

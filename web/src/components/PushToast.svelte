@@ -1,16 +1,36 @@
 <script>
   import { pushNotifications, dismissPush } from '../lib/stores/chat.js';
   import { marked } from 'marked';
+  import DOMPurify from 'dompurify';
 
-  // Auto-dismiss after 15 seconds
+  // Auto-dismiss each notification after 15 seconds
+  // Track timers per-notification to handle bursts correctly
+  const dismissTimers = new Map();
+
   $effect(() => {
     const ns = $pushNotifications;
-    if (ns.length > 0) {
-      const latest = ns[ns.length - 1];
-      const timer = setTimeout(() => dismissPush(latest.id), 15000);
-      return () => clearTimeout(timer);
+    // Set timers for any new notifications
+    for (const notif of ns) {
+      if (!dismissTimers.has(notif.id)) {
+        const timer = setTimeout(() => {
+          dismissTimers.delete(notif.id);
+          dismissPush(notif.id);
+        }, 15000);
+        dismissTimers.set(notif.id, timer);
+      }
+    }
+    // Clean up timers for dismissed notifications
+    for (const [id, timer] of dismissTimers) {
+      if (!ns.find(n => n.id === id)) {
+        clearTimeout(timer);
+        dismissTimers.delete(id);
+      }
     }
   });
+
+  function sanitize(content) {
+    return DOMPurify.sanitize(marked.parse(content || ''));
+  }
 </script>
 
 {#if $pushNotifications.length > 0}
@@ -22,7 +42,7 @@
           <span class="toast-title">{notif.title}</span>
           <button class="toast-close" onclick={() => dismissPush(notif.id)} aria-label="Dismiss">&times;</button>
         </div>
-        <div class="toast-body">{@html marked.parse(notif.content || '')}</div>
+        <div class="toast-body">{@html sanitize(notif.content)}</div>
       </div>
     {/each}
   </div>
@@ -81,6 +101,7 @@
     line-height: 1.5;
     max-height: 200px;
     overflow-y: auto;
+    overflow-wrap: break-word;
   }
 
   .toast-body :global(p) { margin: 0.3em 0; }

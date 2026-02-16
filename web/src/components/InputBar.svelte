@@ -1,11 +1,24 @@
 <script>
   import { sendMessage, isStreaming } from '../lib/stores/chat.js';
+  import { onDestroy } from 'svelte';
 
   let input = $state('');
   let textarea = $state(null);
   let recording = $state(false);
-  let mediaRecorder = $state(null);
+  let mediaRecorder = null;
+  let activeStream = null;
   let transcribing = $state(false);
+
+  onDestroy(() => {
+    // Stop recording and release mic if component unmounts mid-recording
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+      mediaRecorder.stop();
+    }
+    if (activeStream) {
+      activeStream.getTracks().forEach(t => t.stop());
+      activeStream = null;
+    }
+  });
 
   const COMMAND_HINTS = [
     { cmd: '/help', desc: 'Show commands' },
@@ -25,10 +38,12 @@
   );
 
   function handleSubmit() {
-    if (!input.trim() || $isStreaming) return;
-    sendMessage(input);
-    input = '';
-    autoResize();
+    if (!input.trim()) return;
+    const sent = sendMessage(input);
+    if (sent) {
+      input = '';
+      autoResize();
+    }
   }
 
   function handleKeydown(e) {
@@ -62,6 +77,7 @@
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      activeStream = stream;
       const recorder = new MediaRecorder(stream, {
         mimeType: MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
           ? 'audio/webm;codecs=opus'
@@ -77,6 +93,7 @@
         recording = false;
         mediaRecorder = null;
         stream.getTracks().forEach(t => t.stop());
+        activeStream = null;
 
         if (chunks.length === 0) return;
 
@@ -127,9 +144,9 @@
       bind:value={input}
       oninput={autoResize}
       onkeydown={handleKeydown}
-      placeholder={transcribing ? 'Transcribing...' : 'Message Conduit...'}
+      placeholder={transcribing ? 'Transcribing...' : $isStreaming ? 'Responding...' : 'Message Conduit...'}
       rows="1"
-      disabled={$isStreaming || transcribing}
+      disabled={transcribing}
     ></textarea>
 
     <button
@@ -137,7 +154,7 @@
       class:recording
       class:transcribing
       onclick={toggleRecording}
-      disabled={$isStreaming || transcribing}
+      disabled={transcribing}
       aria-label={recording ? 'Stop recording' : 'Start recording'}
     >
       {#if transcribing}
@@ -158,7 +175,7 @@
     <button
       class="send-btn"
       onclick={handleSubmit}
-      disabled={!input.trim() || $isStreaming}
+      disabled={!input.trim()}
       aria-label="Send message"
     >
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

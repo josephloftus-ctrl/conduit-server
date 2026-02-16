@@ -1,29 +1,57 @@
 <script>
   import { marked } from 'marked';
+  import DOMPurify from 'dompurify';
   import ToolCallIndicator from './ToolCallIndicator.svelte';
+  import { isStreaming } from '../lib/stores/chat.js';
 
   let { msg } = $props();
 
-  // Configure marked for safe rendering
-  marked.setOptions({
-    breaks: true,
-    gfm: true,
-  });
+  // Configure marked once at module level (not per-instance)
+  marked.setOptions({ breaks: true, gfm: true });
 
-  let rendered = $derived(
-    msg.role === 'user' ? escapeHtml(msg.content) : marked.parse(msg.content || '')
-  );
+  // Throttled markdown rendering during streaming to avoid
+  // re-parsing the entire message on every token
+  let lastParsed = $state('');
+  let lastInput = '';
+  let parseTimer = null;
+
+  let rendered = $derived.by(() => {
+    if (msg.role === 'user') return escapeHtml(msg.content);
+    const content = msg.content || '';
+
+    if (msg.streaming) {
+      // During streaming, throttle markdown parsing to ~60ms intervals
+      if (content !== lastInput) {
+        lastInput = content;
+        if (!parseTimer) {
+          parseTimer = setTimeout(() => {
+            parseTimer = null;
+            lastParsed = DOMPurify.sanitize(marked.parse(lastInput));
+          }, 60);
+        }
+      }
+      return lastParsed || DOMPurify.sanitize(marked.parse(content));
+    }
+
+    // Final render — no throttle
+    lastInput = '';
+    lastParsed = '';
+    if (parseTimer) { clearTimeout(parseTimer); parseTimer = null; }
+    return DOMPurify.sanitize(marked.parse(content));
+  });
 
   function escapeHtml(str) {
     return str
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;')
       .replace(/\n/g, '<br>');
   }
 
   // Model badge display name
-  let modelBadge = $derived(() => {
+  let modelBadge = $derived.by(() => {
     if (!msg.model) return null;
     const m = msg.model;
     if (m.includes('opus') || m.includes('claude')) return 'Opus';
@@ -36,7 +64,7 @@
   let hasToolCalls = $derived(msg.toolCalls && msg.toolCalls.length > 0);
 </script>
 
-<div class="bubble {msg.role}" class:streaming={msg.streaming} class:error={msg.role === 'error'}>
+<div class="bubble {msg.role}" class:streaming={$isStreaming && msg.streaming} class:error={msg.role === 'error'}>
   {#if msg.role === 'error'}
     <div class="error-content">{msg.content}</div>
   {:else}
@@ -53,13 +81,13 @@
     {/if}
   {/if}
 
-  {#if msg.role === 'assistant' && modelBadge() && !msg.streaming}
+  {#if msg.role === 'assistant' && modelBadge && !($isStreaming && msg.streaming)}
     <div class="meta">
-      <span class="model-badge">{modelBadge()}</span>
+      <span class="model-badge">{modelBadge}</span>
     </div>
   {/if}
 
-  {#if msg.streaming}
+  {#if $isStreaming && msg.streaming}
     <span class="cursor">|</span>
   {/if}
 </div>

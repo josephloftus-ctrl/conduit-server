@@ -72,12 +72,37 @@ def mask_key(key: str) -> str:
 
 
 def sanitize_provider(name: str, prov_cfg: dict) -> dict:
-    """Return provider config with masked API key."""
+    """Return provider config with masked API key (or auth info for OAuth/Vertex)."""
     result = dict(prov_cfg)
-    # Resolve and mask the actual key
-    api_key = config.get_api_key(name)
-    result["api_key_masked"] = mask_key(api_key)
-    result["has_key"] = bool(api_key)
+    ptype = prov_cfg.get("type", "")
+
+    if ptype == "chatgpt":
+        # OAuth-based — show auth status instead of API key
+        from .chatgpt_auth import get_auth_info
+        auth_info = get_auth_info()
+        result["auth"] = auth_info
+        result["has_key"] = auth_info.get("authenticated", False)
+        result["api_key_masked"] = ""
+    elif ptype == "gemini" and prov_cfg.get("vertex"):
+        # Vertex AI — authenticated via GCP project, not API key
+        project_env = prov_cfg.get("project_env", "")
+        gcp_project = os.getenv(project_env, "") if project_env else ""
+        result["has_key"] = bool(gcp_project)
+        result["api_key_masked"] = ""
+        result["auth_method"] = "vertex"
+        result["gcp_project"] = gcp_project
+    elif ptype == "claude_code":
+        # CLI-based — no API key needed, just checks if binary exists
+        import shutil
+        result["has_key"] = shutil.which("claude") is not None
+        result["api_key_masked"] = ""
+        result["auth_method"] = "cli"
+    else:
+        # Standard API key provider
+        api_key = config.get_api_key(name)
+        result["api_key_masked"] = mask_key(api_key)
+        result["has_key"] = bool(api_key)
+
     return result
 
 

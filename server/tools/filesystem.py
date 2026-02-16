@@ -1,16 +1,22 @@
-"""Read-only filesystem tools — read_file, list_directory, glob_files, grep."""
+"""Filesystem tools — read_file, list_directory, glob_files, grep, update_index."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
+from datetime import datetime
 from pathlib import Path
+
+import yaml
 
 from . import register
 from .definitions import ToolDefinition
 from .util import resolve_path as _resolve_path, is_allowed as _is_allowed
 
 log = logging.getLogger("conduit.tools.fs")
+
+INDEX_DIR = Path.home() / ".index" / "domains"
 
 MAX_FILE_SIZE = 50 * 1024  # 50KB truncation limit
 MAX_RESULTS = 200
@@ -142,6 +148,46 @@ async def _grep(pattern: str, path: str = "~", include: str = "") -> str:
     return output
 
 
+async def _update_index(action: str, domain: str, path: str, summary: str = "") -> str:
+    """Add, update, or remove an entry in a domain YAML index file."""
+    yaml_path = INDEX_DIR / f"{domain}.yaml"
+    if not yaml_path.exists():
+        return f"Error: Domain file not found: {domain}.yaml"
+
+    try:
+        data = yaml.safe_load(yaml_path.read_text()) or {}
+    except Exception as e:
+        return f"Error reading {domain}.yaml: {e}"
+
+    files = data.setdefault("files", {})
+
+    if action == "add" or action == "update":
+        if not summary:
+            return "Error: summary is required for add/update"
+        ext = Path(path).suffix.lstrip(".")
+        files[path] = {
+            "summary": summary,
+            "type": ext,
+            "added": datetime.now().strftime("%Y-%m-%d"),
+        }
+    elif action == "remove":
+        if path in files:
+            del files[path]
+        else:
+            return f"Entry not found: {path}"
+    else:
+        return f"Error: Unknown action '{action}'. Use add, update, or remove."
+
+    data["updated"] = datetime.now().strftime("%Y-%m-%d")
+
+    try:
+        yaml_path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
+    except Exception as e:
+        return f"Error writing {domain}.yaml: {e}"
+
+    return f"OK: {action}d '{path}' in {domain}.yaml"
+
+
 # --- Register all filesystem tools ---
 
 def register_all():
@@ -232,4 +278,35 @@ def register_all():
         },
         handler=_grep,
         permission="none",
+    ))
+
+    register(ToolDefinition(
+        name="update_index",
+        description="Add, update, or remove a file entry in the ~/.index/ domain YAML files. Use when creating, moving, or deleting files.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["add", "update", "remove"],
+                    "description": "Action to perform: add, update, or remove an entry",
+                },
+                "domain": {
+                    "type": "string",
+                    "enum": ["work-lockheed", "work-general", "projects"],
+                    "description": "Domain YAML file to update",
+                },
+                "path": {
+                    "type": "string",
+                    "description": "File path relative to the domain base (e.g. 'sales/2-5-26.pdf')",
+                },
+                "summary": {
+                    "type": "string",
+                    "description": "One-sentence description of the file (required for add/update)",
+                },
+            },
+            "required": ["action", "domain", "path"],
+        },
+        handler=_update_index,
+        permission="write",
     ))

@@ -11,7 +11,7 @@
     if (permission) respondToPermission(permission.id, false);
   }
 
-  let actionLabel = $derived(() => {
+  let actionLabel = $derived.by(() => {
     if (!permission) return '';
     const [type, tool] = permission.action.split(':');
     if (type === 'write') return `Write: ${tool}`;
@@ -19,7 +19,7 @@
     return permission.action;
   });
 
-  let detailText = $derived(() => {
+  let detailText = $derived.by(() => {
     if (!permission) return '';
     const d = permission.detail;
     if (d.command) return d.command;
@@ -31,7 +31,8 @@
 </script>
 
 {#if permission}
-  <div class="perm-overlay" onclick={deny}></div>
+  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+  <div class="perm-overlay" role="presentation" onclick={deny}></div>
   <div class="perm-modal">
     <div class="perm-header">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--yellow, #e0c050)" stroke-width="2">
@@ -40,10 +41,10 @@
       <span>Permission Required</span>
     </div>
 
-    <div class="perm-action">{actionLabel()}</div>
+    <div class="perm-action">{actionLabel}</div>
 
     <div class="perm-detail">
-      <pre>{detailText()}</pre>
+      <pre>{detailText}</pre>
     </div>
 
     <div class="perm-buttons">
