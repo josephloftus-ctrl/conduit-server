@@ -53,6 +53,12 @@ SEARCH_TOP_K = memory_cfg.get("search_top_k", 15)
 IMPORTANCE_FLOOR = memory_cfg.get("importance_floor", 8)
 DEDUP_THRESHOLD = memory_cfg.get("dedup_threshold", 0.9)
 
+# Indexer
+indexer_cfg = _raw.get("indexer", {})
+INDEXER_ENABLED = indexer_cfg.get("enabled", False)
+INDEXER_OUTPUT_DIR = indexer_cfg.get("output_dir", "~/conduit-data/indexes")
+INDEXER_PROJECTS = indexer_cfg.get("projects", [])
+
 # Scheduler
 scheduler_cfg = _raw.get("scheduler", {})
 TIMEZONE = scheduler_cfg.get("timezone", "America/New_York")
@@ -161,6 +167,7 @@ def reload():
     global COMPLEXITY_THRESHOLD, LONG_CONTEXT_CHARS, HAIKU_BAND
     global MAX_MEMORIES, SUMMARY_THRESHOLD, EXTRACTION_ENABLED
     global EMBEDDING_MODEL, EMBEDDING_DIMENSIONS, SEARCH_TOP_K, IMPORTANCE_FLOOR, DEDUP_THRESHOLD
+    global INDEXER_ENABLED, INDEXER_OUTPUT_DIR, INDEXER_PROJECTS
     global TIMEZONE, ACTIVE_HOURS, HEARTBEAT_INTERVAL, IDLE_CHECKIN_MINUTES, REMINDER_CHECK_MINUTES
     global TOOLS_ENABLED, MAX_AGENT_TURNS, COMMAND_TIMEOUT, ALLOWED_DIRECTORIES, AUTO_APPROVE_READS, AUTO_APPROVE_ALL
     global AGENTS_LIST, AGENTS_COMMS, BINDINGS_LIST
@@ -212,6 +219,11 @@ def reload():
     SEARCH_TOP_K = mem.get("search_top_k", 15)
     IMPORTANCE_FLOOR = mem.get("importance_floor", 8)
     DEDUP_THRESHOLD = mem.get("dedup_threshold", 0.9)
+
+    ix = _raw.get("indexer", {})
+    INDEXER_ENABLED = ix.get("enabled", False)
+    INDEXER_OUTPUT_DIR = ix.get("output_dir", "~/conduit-data/indexes")
+    INDEXER_PROJECTS = ix.get("projects", [])
 
     s = _raw.get("scheduler", {})
     TIMEZONE = s.get("timezone", "America/New_York")

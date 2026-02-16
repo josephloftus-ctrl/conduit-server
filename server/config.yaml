@@ -155,6 +155,15 @@ memory:
   importance_floor: 9
   dedup_threshold: 0.9
 
+indexer:
+  enabled: true
+  output_dir: "~/conduit-data/indexes"
+  projects:
+    - name: spectre
+      path: "~/Projects/spectre"
+    - name: conduit
+      path: "~/conduit"
+
 scheduler:
   timezone: "America/New_York"
   active_hours: [7, 22]
