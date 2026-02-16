@@ -154,6 +154,9 @@ memory:
   search_top_k: 8
   importance_floor: 9
   dedup_threshold: 0.9
+  bm25_enabled: true
+  bm25_db_path: "~/conduit-data/memory_index.db"
+  hybrid_top_k: 10
 
 indexer:
   enabled: true

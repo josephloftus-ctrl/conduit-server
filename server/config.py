@@ -52,6 +52,9 @@ EMBEDDING_DIMENSIONS = memory_cfg.get("embedding_dimensions", 768)
 SEARCH_TOP_K = memory_cfg.get("search_top_k", 15)
 IMPORTANCE_FLOOR = memory_cfg.get("importance_floor", 8)
 DEDUP_THRESHOLD = memory_cfg.get("dedup_threshold", 0.9)
+BM25_ENABLED = memory_cfg.get("bm25_enabled", False)
+BM25_DB_PATH = memory_cfg.get("bm25_db_path", "~/conduit-data/memory_index.db")
+HYBRID_TOP_K = memory_cfg.get("hybrid_top_k", 10)
 
 # Indexer
 indexer_cfg = _raw.get("indexer", {})
@@ -167,6 +170,7 @@ def reload():
     global COMPLEXITY_THRESHOLD, LONG_CONTEXT_CHARS, HAIKU_BAND
     global MAX_MEMORIES, SUMMARY_THRESHOLD, EXTRACTION_ENABLED
     global EMBEDDING_MODEL, EMBEDDING_DIMENSIONS, SEARCH_TOP_K, IMPORTANCE_FLOOR, DEDUP_THRESHOLD
+    global BM25_ENABLED, BM25_DB_PATH, HYBRID_TOP_K
     global INDEXER_ENABLED, INDEXER_OUTPUT_DIR, INDEXER_PROJECTS
     global TIMEZONE, ACTIVE_HOURS, HEARTBEAT_INTERVAL, IDLE_CHECKIN_MINUTES, REMINDER_CHECK_MINUTES
     global TOOLS_ENABLED, MAX_AGENT_TURNS, COMMAND_TIMEOUT, ALLOWED_DIRECTORIES, AUTO_APPROVE_READS, AUTO_APPROVE_ALL
@@ -219,6 +223,9 @@ def reload():
     SEARCH_TOP_K = mem.get("search_top_k", 15)
     IMPORTANCE_FLOOR = mem.get("importance_floor", 8)
     DEDUP_THRESHOLD = mem.get("dedup_threshold", 0.9)
+    BM25_ENABLED = mem.get("bm25_enabled", False)
+    BM25_DB_PATH = mem.get("bm25_db_path", "~/conduit-data/memory_index.db")
+    HYBRID_TOP_K = mem.get("hybrid_top_k", 10)
 
     ix = _raw.get("indexer", {})
     INDEXER_ENABLED = ix.get("enabled", False)
