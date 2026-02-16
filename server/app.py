@@ -330,6 +330,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         log.warning("Scheduler not available: %s", e)
 
+    # Sync BM25 index from Firestore
+    if config.BM25_ENABLED:
+        try:
+            from . import memory_index
+            await memory_index.sync_from_firestore()
+            log.info("BM25 memory index synced from Firestore")
+        except Exception as e:
+            log.warning("BM25 sync failed (non-fatal): %s", e)
+
     # Start file watcher if configured
     watcher_observer = None
     if config.WATCHER_ENABLED:
@@ -357,6 +366,12 @@ async def lifespan(app: FastAPI):
         await telegram_bot.delete_webhook()
     if scheduler_module:
         await scheduler_module.stop()
+    # Close BM25 index
+    try:
+        from . import memory_index
+        memory_index.close()
+    except Exception:
+        pass
     try:
         from . import vectorstore as vs_mod
         await vs_mod.close()
