@@ -215,32 +215,64 @@ async def extract_memories(user_message: str, assistant_message: str,
 async def get_memory_context(query: str = "") -> str:
     """Build formatted memory context for system prompt injection.
 
-    Uses semantic search to find query-relevant memories. Only falls back
-    to high-importance memories when semantic search returns too few results,
-    and even then applies recency weighting to avoid surfacing stale memories.
+    Hybrid retrieval: combines semantic vector search with BM25 keyword search
+    using Reciprocal Rank Fusion (RRF) to merge results. Memories found by
+    both methods get boosted. Falls back to high-importance memories when
+    hybrid search returns too few results.
     """
     if not vectorstore.is_available():
         return ""
 
     try:
         memories_by_id: dict[str, dict] = {}
-        semantic_count = 0
+        semantic_ranks: dict[str, int] = {}
+        bm25_ranks: dict[str, int] = {}
 
+        # Path 1: Semantic search
         if query:
-            # Semantic search for query-relevant memories
             try:
                 query_embedding = await embeddings.embed_query(query)
                 results = await vectorstore.vector_search(query_embedding, config.SEARCH_TOP_K)
-                for m in results:
+                for rank, m in enumerate(results):
                     memories_by_id[m["id"]] = m
-                semantic_count = len(memories_by_id)
+                    semantic_ranks[m["id"]] = rank
             except Exception as e:
                 log.warning("Semantic search failed: %s", e)
 
-        # Only fall back to high-importance memories if semantic search
-        # returned fewer than 3 relevant results (avoids injecting stale
-        # memories when we already have good context)
-        if semantic_count < 3:
+        # Path 2: BM25 keyword search (gated by config)
+        if query and config.BM25_ENABLED:
+            try:
+                from . import memory_index
+                bm25_results = memory_index.search(query, config.HYBRID_TOP_K)
+                for rank, hit in enumerate(bm25_results):
+                    doc_id = hit["doc_id"]
+                    bm25_ranks[doc_id] = rank
+                    if doc_id not in memories_by_id:
+                        # BM25 found something semantic search missed — fetch full doc
+                        full_doc = await vectorstore.get_by_id(doc_id)
+                        if full_doc:
+                            memories_by_id[doc_id] = full_doc
+            except Exception as e:
+                log.warning("BM25 search failed: %s", e)
+
+        # Merge via Reciprocal Rank Fusion
+        if memories_by_id and (semantic_ranks or bm25_ranks):
+            rrf_scores: dict[str, float] = {}
+            for doc_id in memories_by_id:
+                score = 0.0
+                if doc_id in semantic_ranks:
+                    score += 1.0 / (60 + semantic_ranks[doc_id])
+                if doc_id in bm25_ranks:
+                    score += 1.0 / (60 + bm25_ranks[doc_id])
+                rrf_scores[doc_id] = score
+
+            # Sort by RRF score descending, take top HYBRID_TOP_K
+            sorted_ids = sorted(rrf_scores, key=lambda x: rrf_scores[x], reverse=True)
+            top_ids = sorted_ids[:config.HYBRID_TOP_K]
+            memories_by_id = {did: memories_by_id[did] for did in top_ids if did in memories_by_id}
+
+        # Fall back to high-importance memories if hybrid returned < 3
+        if len(memories_by_id) < 3:
             high = await vectorstore.get_high_importance_recent(
                 config.IMPORTANCE_FLOOR, limit=5,
             )
