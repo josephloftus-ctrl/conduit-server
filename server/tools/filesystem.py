@@ -188,6 +188,20 @@ async def _update_index(action: str, domain: str, path: str, summary: str = "") 
     return f"OK: {action}d '{path}' in {domain}.yaml"
 
 
+async def _load_project_index(project: str) -> str:
+    """Load a pre-computed project index."""
+    from .. import config
+    output_dir = Path(os.path.expanduser(config.INDEXER_OUTPUT_DIR))
+    index_path = output_dir / f"{project}.yaml"
+    if not index_path.exists():
+        available = [p.stem for p in output_dir.glob("*.yaml")] if output_dir.exists() else []
+        return f"No index found for '{project}'. Available: {', '.join(available) or 'none (run indexer first)'}"
+    content = index_path.read_text()
+    if len(content) > 50000:
+        content = content[:50000] + "\n... (truncated)"
+    return content
+
+
 # --- Register all filesystem tools ---
 
 def register_all():
@@ -309,4 +323,21 @@ def register_all():
         },
         handler=_update_index,
         permission="write",
+    ))
+
+    register(ToolDefinition(
+        name="load_project_index",
+        description="Load a pre-computed map of a project's file structure and module descriptions. Use this BEFORE exploring a project with glob/grep — it gives you the full layout in one call.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Project name (e.g. 'spectre', 'conduit')",
+                },
+            },
+            "required": ["project"],
+        },
+        handler=_load_project_index,
+        permission="none",
     ))

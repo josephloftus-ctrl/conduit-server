@@ -175,6 +175,7 @@ async def render_system_prompt_async(query: str = "") -> str:
                 line += f" ({desc})"
             lines.append(line)
         lines.append("Use tools when the user asks about files, directories, code, or needs file operations.")
+        lines.append("Use load_project_index before exploring any project — it returns a pre-built map of files and modules.")
         if config.WEB_SEARCH_ENABLED:
             lines.append("You can search the web and fetch URL content using web_search and web_fetch tools.")
         if config.OUTLOOK_ENABLED:
