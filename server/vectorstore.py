@@ -100,6 +100,24 @@ async def vector_search(query_embedding: list[float],
         return []
 
 
+async def get_by_id(doc_id: str) -> dict | None:
+    """Fetch a single memory by its document ID."""
+    if not _db:
+        return None
+    try:
+        doc_ref = _db.collection(COLLECTION).document(doc_id)
+        doc = await doc_ref.get()
+        if doc.exists:
+            data = doc.to_dict()
+            data["id"] = doc.id
+            data.pop("embedding", None)
+            return data
+        return None
+    except Exception as e:
+        log.debug("get_by_id failed for %s: %s", doc_id, e)
+        return None
+
+
 async def get_high_importance(floor: int | None = None,
                               limit: int = 10) -> list[dict]:
     """Fetch memories with importance >= floor, ordered by importance DESC."""
