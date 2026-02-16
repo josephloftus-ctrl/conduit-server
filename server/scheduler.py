@@ -76,6 +76,17 @@ async def start(manager: ConnectionManager):
     )
     log.info("Memory consolidation scheduled weekly (Sun 4am)")
 
+    # Project indexer — runs daily at 2am
+    if config.INDEXER_ENABLED:
+        from . import indexer as indexer_mod
+        _scheduler.add_job(
+            indexer_mod.index_all,
+            CronTrigger.from_crontab("0 2 * * *", timezone=config.TIMEZONE),
+            id="project_indexer",
+            replace_existing=True,
+        )
+        log.info("Project indexer scheduled daily at 2am")
+
     _scheduler.start()
     log.info("Scheduler started with %d tasks, reminder check every %d min, heartbeat every %d min",
              len(tasks), interval, hb_interval)
