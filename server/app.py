@@ -145,6 +145,7 @@ def render_system_prompt() -> str:
         tools_context="",
         skills_context="",
         scout_context="",
+        worker_context="",
     )
     return prompt
 
@@ -252,6 +253,15 @@ async def render_system_prompt_async(query: str = "") -> str:
     except Exception as e:
         log.warning("Failed to load scout report: %s", e)
 
+    # Build worker context
+    worker_context = ""
+    if config.WORKER_ENABLED:
+        try:
+            from . import worker as worker_mod
+            worker_context = worker_mod.get_status_context()
+        except Exception as e:
+            log.warning("Failed to get worker context: %s", e)
+
     prompt = template.format(
         name=config.PERSONALITY_NAME,
         time=now.strftime("%I:%M %p"),
@@ -262,6 +272,7 @@ async def render_system_prompt_async(query: str = "") -> str:
         tools_context=tools_context,
         skills_context=skills_context,
         scout_context=scout_context,
+        worker_context=worker_context,
     )
     return prompt
 
@@ -592,6 +603,20 @@ async def handle_message(ws: WebSocket, data: dict, conversation_id: str):
 
     # Store user message
     await db.add_message(conversation_id, "user", content)
+
+    # Worker boss response hook — intercept if worker is awaiting a response
+    if config.WORKER_ENABLED:
+        try:
+            from . import worker as worker_mod
+            if worker_mod.is_awaiting_response():
+                reply = await worker_mod.handle_boss_response(content)
+                if reply:
+                    await db.add_message(conversation_id, "assistant", reply, source="worker")
+                    await manager.send_chunk(ws, reply)
+                    await manager.send_done(ws)
+                    return
+        except Exception as e:
+            log.warning("Worker response handling failed: %s", e)
 
     # Drain subagent announcements
     if config.SUBAGENTS_ENABLED:

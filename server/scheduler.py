@@ -87,6 +87,24 @@ async def start(manager: ConnectionManager):
         )
         log.info("Project indexer scheduled daily at 2am")
 
+    # Worker loop — Reddit digest + autonomous cycle
+    if config.WORKER_ENABLED:
+        _scheduler.add_job(
+            _run_reddit_digest,
+            CronTrigger.from_crontab(config.WORKER_DIGEST_CRON, timezone=config.TIMEZONE),
+            id="reddit_digest",
+            replace_existing=True,
+        )
+        log.info("Reddit digest scheduled: %s", config.WORKER_DIGEST_CRON)
+
+        _scheduler.add_job(
+            _run_worker_cycle,
+            CronTrigger.from_crontab(config.WORKER_CYCLE_CRON, timezone=config.TIMEZONE),
+            id="worker_cycle",
+            replace_existing=True,
+        )
+        log.info("Worker cycle scheduled: %s", config.WORKER_CYCLE_CRON)
+
     _scheduler.start()
     log.info("Scheduler started with %d tasks, reminder check every %d min, heartbeat every %d min",
              len(tasks), interval, hb_interval)
@@ -329,3 +347,23 @@ async def _store_reminder(text: str, due: float):
     reminders = json.loads(raw) if raw else []
     reminders.append({"text": text, "due": due})
     await db.kv_set("reminders", json.dumps(reminders))
+
+
+# --- Worker loop jobs ---
+
+async def _run_reddit_digest():
+    """Refresh the Reddit activity digest for the worker."""
+    try:
+        from . import reddit
+        await reddit.refresh_digest()
+    except Exception as e:
+        log.error("Reddit digest error: %s", e)
+
+
+async def _run_worker_cycle():
+    """Run one cycle of the autonomous worker loop."""
+    try:
+        from . import worker
+        await worker.run_cycle(_manager)
+    except Exception as e:
+        log.error("Worker cycle error: %s", e)

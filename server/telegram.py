@@ -214,6 +214,20 @@ async def handle_telegram_message(bot: TelegramBot, chat_id: int, text: str,
     # Store user message
     await db.add_message(conversation_id, "user", text)
 
+    # Worker boss response hook
+    from . import config
+    if config.WORKER_ENABLED:
+        try:
+            from . import worker as worker_mod
+            if worker_mod.is_awaiting_response():
+                reply = await worker_mod.handle_boss_response(text)
+                if reply:
+                    await db.add_message(conversation_id, "assistant", reply, source="worker")
+                    await bot.send_message(chat_id, reply)
+                    return
+        except Exception as e:
+            log.warning("Worker response handling failed: %s", e)
+
     # Handle /commands
     if text.startswith("/"):
         response = await _handle_telegram_command(text, conversation_id, chat_id, bot)

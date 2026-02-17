@@ -7,7 +7,7 @@ personality:
     \ practical, and friendly.\nYou speak naturally \u2014 never reveal your underlying\
     \ model or provider. You are {name}, period.\n\nCurrent time: {time} on {date}\
     \ ({day}).\n\n{memories}\n\n{pending_tasks}\n\n{tools_context}\n\n{skills_context}\n\
-    \n{scout_context}\n"
+    \n{scout_context}\n\n{worker_context}\n"
 models:
   providers:
     chatgpt:
@@ -260,3 +260,13 @@ outlook:
   enabled: true
   client_id_env: OUTLOOK_CLIENT_ID
   poll_interval_minutes: 15
+worker:
+  enabled: true
+  reddit_username: kitchenjesus
+  cycle_cron: "0 10,20 * * *"
+  digest_cron: "0 5 * * *"
+  data_dir: ~/conduit/server/data/worker
+  ideation_provider: minimax
+  planning_provider: haiku
+  building_provider: claude_code
+  proposal_timeout_hours: 48

@@ -163,6 +163,18 @@ OUTLOOK_CLIENT_ID = os.getenv(outlook_cfg.get("client_id_env", "OUTLOOK_CLIENT_I
 OUTLOOK_ENABLED = outlook_cfg.get("enabled", True)
 OUTLOOK_POLL_INTERVAL = outlook_cfg.get("poll_interval_minutes", 15)
 
+# Worker
+worker_cfg = _raw.get("worker", {})
+WORKER_ENABLED = worker_cfg.get("enabled", False)
+WORKER_REDDIT_USERNAME = worker_cfg.get("reddit_username", "")
+WORKER_CYCLE_CRON = worker_cfg.get("cycle_cron", "0 10,20 * * *")
+WORKER_DIGEST_CRON = worker_cfg.get("digest_cron", "0 5 * * *")
+WORKER_DATA_DIR = worker_cfg.get("data_dir", "~/conduit/server/data/worker")
+WORKER_IDEATION_PROVIDER = worker_cfg.get("ideation_provider", "minimax")
+WORKER_PLANNING_PROVIDER = worker_cfg.get("planning_provider", "haiku")
+WORKER_BUILDING_PROVIDER = worker_cfg.get("building_provider", "claude_code")
+WORKER_PROPOSAL_TIMEOUT_HOURS = worker_cfg.get("proposal_timeout_hours", 48)
+
 # Legacy compat
 SYSTEM_PROMPT = SYSTEM_PROMPT_TEMPLATE
 
@@ -207,6 +219,9 @@ def reload():
     global DEEP_SEARCH_CACHE_TTL, DEEP_SEARCH_MAX_PAGES, DEEP_SEARCH_MAX_CHUNKS
     global VOICE_ENABLED, OPENAI_API_KEY, VOICE_STT_MODEL, VOICE_TTS_MODEL, VOICE_TTS_VOICE
     global OUTLOOK_CLIENT_ID, OUTLOOK_ENABLED, OUTLOOK_POLL_INTERVAL
+    global WORKER_ENABLED, WORKER_REDDIT_USERNAME, WORKER_CYCLE_CRON, WORKER_DIGEST_CRON
+    global WORKER_DATA_DIR, WORKER_IDEATION_PROVIDER, WORKER_PLANNING_PROVIDER
+    global WORKER_BUILDING_PROVIDER, WORKER_PROPOSAL_TIMEOUT_HOURS
 
     load_dotenv(SERVER_DIR / ".env", override=True)
 
@@ -341,3 +356,14 @@ def reload():
     OUTLOOK_CLIENT_ID = os.getenv(ol.get("client_id_env", "OUTLOOK_CLIENT_ID"), "")
     OUTLOOK_ENABLED = ol.get("enabled", True)
     OUTLOOK_POLL_INTERVAL = ol.get("poll_interval_minutes", 15)
+
+    wk = _raw.get("worker", {})
+    WORKER_ENABLED = wk.get("enabled", False)
+    WORKER_REDDIT_USERNAME = wk.get("reddit_username", "")
+    WORKER_CYCLE_CRON = wk.get("cycle_cron", "0 10,20 * * *")
+    WORKER_DIGEST_CRON = wk.get("digest_cron", "0 5 * * *")
+    WORKER_DATA_DIR = wk.get("data_dir", "~/conduit/server/data/worker")
+    WORKER_IDEATION_PROVIDER = wk.get("ideation_provider", "minimax")
+    WORKER_PLANNING_PROVIDER = wk.get("planning_provider", "haiku")
+    WORKER_BUILDING_PROVIDER = wk.get("building_provider", "claude_code")
+    WORKER_PROPOSAL_TIMEOUT_HOURS = wk.get("proposal_timeout_hours", 48)
