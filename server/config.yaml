@@ -1,5 +1,5 @@
 server:
-  host: 192.168.1.174
+  host: "0.0.0.0"
   port: 8080
 personality:
   name: Conduit
@@ -90,7 +90,7 @@ agents:
   list:
   - id: default
     default: true
-    provider: openrouter
+    provider: minimax
   - id: researcher
     provider: gemini
     prompt_extend: You specialize in web research and information synthesis.
