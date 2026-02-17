@@ -1120,7 +1120,7 @@ async def api_set_tools(body: dict, _admin=Depends(require_admin)):
     from .settings import get_config, save_config
     # Security-sensitive keys are excluded — these can only be changed via
     # config.yaml directly or the /permissions WebSocket command (runtime toggle).
-    DANGEROUS_KEYS = {"auto_approve_all", "enabled", "allowed_directories"}
+    DANGEROUS_KEYS = {"enabled", "allowed_directories"}
     rejected = [k for k in body if k in DANGEROUS_KEYS]
     if rejected:
         raise HTTPException(
@@ -1129,7 +1129,7 @@ async def api_set_tools(body: dict, _admin=Depends(require_admin)):
         )
     cfg = get_config()
     tools_cfg = cfg.setdefault("tools", {})
-    for key in ("max_agent_turns", "command_timeout_seconds", "auto_approve_reads"):
+    for key in ("max_agent_turns", "command_timeout_seconds", "auto_approve_reads", "auto_approve_all"):
         if key in body:
             tools_cfg[key] = body[key]
     save_config(cfg)
