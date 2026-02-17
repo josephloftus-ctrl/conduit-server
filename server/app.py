@@ -313,6 +313,25 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             log.warning("Markdown skills not available: %s", e)
 
+    # Load Python plugins
+    if config.PLUGINS_ENABLED:
+        try:
+            from .plugins import load_all_plugins
+            from .tools import register as register_tool
+            from .skills import _skills
+
+            plugin_tools, plugin_skills = load_all_plugins(config.PLUGINS_DIR)
+            for tool in plugin_tools:
+                register_tool(tool)
+            # Merge plugin-registered skills into the skills store
+            _skills.extend(plugin_skills)
+            if plugin_tools:
+                log.info("Plugin tools registered: %s", [t.name for t in plugin_tools])
+            if plugin_skills:
+                log.info("Plugin skills registered: %s", [s["name"] for s in plugin_skills])
+        except Exception as e:
+            log.warning("Plugins not available: %s", e)
+
     # Initialize embeddings + vectorstore
     try:
         from . import embeddings as emb_mod

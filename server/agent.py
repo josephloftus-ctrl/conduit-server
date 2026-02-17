@@ -93,6 +93,17 @@ async def run_agent_loop(
     full_text = ""
     turns = 0
 
+    # Dispatch before_agent_start hook
+    try:
+        from .plugins import dispatch_hook
+        hook_result = await dispatch_hook(
+            "before_agent_start", messages=messages, system_prompt=system
+        )
+        if hook_result and "system_prompt" in hook_result:
+            system = hook_result["system_prompt"]
+    except Exception:
+        pass
+
     while turns < max_turns:
         turns += 1
         turn_text = ""
@@ -130,6 +141,18 @@ async def run_agent_loop(
                 await manager.send_tool_done(ws, tc.id, tc.name, error=result)
             else:
                 result = await _execute_tool(tool, tc, ws, manager)
+
+                # Dispatch after_tool_call hook
+                try:
+                    from .plugins import dispatch_hook as _dispatch_hook
+                    hook_result = await _dispatch_hook(
+                        "after_tool_call", tool_name=tc.name,
+                        args=tc.arguments, result=result
+                    )
+                    if hook_result and "result" in hook_result:
+                        result = hook_result["result"]
+                except Exception:
+                    pass
 
             result_msg = provider.format_tool_result(tc.id, tc.name, result)
             messages.append(result_msg)
