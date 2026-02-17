@@ -16,6 +16,8 @@ personality:
 
     {tools_context}
 
+    {skills_context}
+
     {scout_context}
 
 models:

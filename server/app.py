@@ -122,6 +122,7 @@ def render_system_prompt() -> str:
         memories=memory_context,
         pending_tasks=pending,
         tools_context="",
+        skills_context="",
         scout_context="",
     )
     return prompt
@@ -182,6 +183,15 @@ async def render_system_prompt_async(query: str = "") -> str:
             lines.append("You can read the user's Outlook inbox using read_inbox, search_email, and read_email tools.")
         tools_context = "\n".join(lines)
 
+    # Build skills context
+    skills_context = ""
+    if config.MARKDOWN_SKILLS_ENABLED:
+        try:
+            from .skills import get_skills_context
+            skills_context = get_skills_context(query, config.MARKDOWN_SKILLS_MAX_PER_TURN)
+        except Exception:
+            pass
+
     # Build scout context from Reddit Scout report
     scout_context = ""
     scout_report_path = Path.home() / "conduit" / "server" / "data" / "scout_report.json"
@@ -215,6 +225,7 @@ async def render_system_prompt_async(query: str = "") -> str:
         memories=memory_context,
         pending_tasks=pending,
         tools_context=tools_context,
+        skills_context=skills_context,
         scout_context=scout_context,
     )
     return prompt
@@ -293,6 +304,14 @@ async def lifespan(app: FastAPI):
             except ImportError:
                 pass
         log.info("Tools registered: %s", [t.name for t in get_all_tools()])
+
+    # Load markdown skills
+    if config.MARKDOWN_SKILLS_ENABLED:
+        try:
+            from .skills import load_skills
+            load_skills(config.MARKDOWN_SKILLS_DIR)
+        except Exception as e:
+            log.warning("Markdown skills not available: %s", e)
 
     # Initialize embeddings + vectorstore
     try:
