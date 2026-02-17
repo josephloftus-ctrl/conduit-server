@@ -251,6 +251,12 @@ def get_skills_context(user_message: str, max_per_turn: int = 2) -> str:
 
 async def _fetch_url(url: str, timeout: int = 15) -> str:
     """Fetch content from a URL. Uses aiohttp if available, falls back to urllib."""
+    from .tools.url_validation import is_url_blocked
+
+    blocked = is_url_blocked(url)
+    if blocked:
+        raise ValueError(f"URL blocked: {blocked}")
+
     try:
         import aiohttp
         async with aiohttp.ClientSession() as session:
@@ -281,9 +287,14 @@ async def skill_install(name: str, source: str = "clawhub") -> str:
         from . import config
         _skills_dir = os.path.expanduser(config.MARKDOWN_SKILLS_DIR)
 
+    # Sanitize name — prevent path traversal
+    safe_name = re.sub(r"[^a-zA-Z0-9_-]", "", name)
+    if not safe_name or safe_name != name:
+        return f"Error: invalid skill name '{name}'. Use only alphanumeric, hyphens, and underscores."
+
     # Determine URL
     if source == "clawhub":
-        url = f"https://clawhub.com/api/skills/{name}/download"
+        url = f"https://clawhub.com/api/skills/{safe_name}/download"
     elif source.startswith("http"):
         url = source
     else:
@@ -301,7 +312,7 @@ async def skill_install(name: str, source: str = "clawhub") -> str:
         return f"Error: downloaded content is not a valid SKILL.md (no YAML frontmatter)"
 
     # Save to skills directory
-    skill_dir = Path(_skills_dir) / name
+    skill_dir = Path(_skills_dir) / safe_name
     skill_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
 

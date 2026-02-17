@@ -10,6 +10,7 @@ import trafilatura
 
 from . import register
 from .definitions import ToolDefinition
+from .url_validation import is_url_blocked
 from .. import config
 
 log = logging.getLogger("conduit.tools.web")
@@ -61,6 +62,10 @@ async def _web_search(query: str, num_results: int = 5) -> str:
 
 async def _web_fetch(url: str) -> str:
     """Fetch a URL and extract readable text content."""
+    blocked = is_url_blocked(url)
+    if blocked:
+        return f"Error: {blocked}"
+
     try:
         async with httpx.AsyncClient(
             timeout=config.WEB_FETCH_TIMEOUT,
@@ -157,6 +162,11 @@ def _score_chunks(query: str, chunks: list[dict]) -> list[dict]:
 
 async def _fetch_cached(url: str) -> str | None:
     """Fetch a URL with in-memory TTL cache. Returns raw HTML or None on failure."""
+    blocked = is_url_blocked(url)
+    if blocked:
+        log.warning("Deep search SSRF blocked: %s — %s", url, blocked)
+        return None
+
     now = time.time()
     ttl = config.DEEP_SEARCH_CACHE_TTL
 

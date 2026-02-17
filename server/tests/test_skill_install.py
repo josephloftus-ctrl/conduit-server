@@ -4,6 +4,31 @@ import pytest
 
 
 @pytest.mark.asyncio
+async def test_skill_install_rejects_path_traversal(tmp_skills_dir, monkeypatch):
+    """skill_install should reject names with path traversal characters."""
+    from server import skills
+
+    monkeypatch.setattr(skills, "_skills_dir", str(tmp_skills_dir))
+
+    result = await skills.skill_install(name="../../etc/cron.d", source="https://example.com/bad")
+    assert "error" in result.lower() or "invalid" in result.lower()
+
+    # Verify nothing was written outside skills dir
+    assert not (tmp_skills_dir / ".." / ".." / "etc").exists()
+
+
+@pytest.mark.asyncio
+async def test_skill_install_rejects_slashes(tmp_skills_dir, monkeypatch):
+    """skill_install should reject names containing slashes."""
+    from server import skills
+
+    monkeypatch.setattr(skills, "_skills_dir", str(tmp_skills_dir))
+
+    result = await skills.skill_install(name="foo/bar", source="clawhub")
+    assert "error" in result.lower() or "invalid" in result.lower()
+
+
+@pytest.mark.asyncio
 async def test_skill_install_from_url(tmp_skills_dir, monkeypatch):
     """skill_install should download and save a SKILL.md from a URL."""
     from server import skills
