@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -24,6 +25,7 @@ manager = ConnectionManager()
 
 # Provider registry — populated at startup
 providers: dict = {}
+_startup_time: float = 0.0
 
 # Agent registry — populated at startup if agents configured
 agent_registry: "AgentRegistry | None" = None
@@ -280,6 +282,8 @@ async def render_system_prompt_async(query: str = "") -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup/shutdown."""
+    global _startup_time
+    _startup_time = time.time()
     await db.init_db()
     _build_providers()
     log.info("Providers loaded: %s", list(providers.keys()))
@@ -1006,6 +1010,25 @@ async def handle_command(ws: WebSocket, content: str, conversation_id: str) -> b
         return True
 
     return False
+
+
+# --- Health check (no auth) ---
+
+@app.get("/api/health")
+async def api_health():
+    worker_phase = "IDLE"
+    try:
+        from . import worker as worker_mod
+        state = worker_mod._load_state()
+        worker_phase = state.get("phase", "IDLE")
+    except Exception:
+        pass
+    return {
+        "status": "ok",
+        "uptime_seconds": int(time.time() - _startup_time),
+        "providers": list(providers.keys()),
+        "worker_phase": worker_phase,
+    }
 
 
 # --- REST endpoints for web UI ---
