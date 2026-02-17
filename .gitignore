@@ -1,60 +1,28 @@
-# Xcode
-*.xcodeproj
-*.xcworkspace
-xcuserdata/
-DerivedData/
-*.xcarchive
-*.ipa
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.db
 
-# Build
-build/
-*.app
-*.dSYM.zip
-*.dSYM
+# Secrets
+.env
+server/.outlook_token_cache.bin
+server/.chatgpt_token_cache.json
 
-# Dependencies
-Pods/
-Carthage/
+# SearXNG
+searxng/
 
-# Swift Package Manager
-.build/
-.swiftpm/
+# Node
+node_modules/
+web/dist/
 
-# CocoaPods
-Podfile.lock
-
-# Fastlane
-fastlane/report.xml
-fastlane/Preview.html
-fastlane/screenshots/**/*.png
-fastlane/test_output
-
-# Code Injection
-iOSInjectionProject/
-
-# macOS
+# OS
 .DS_Store
 *.swp
 *~
 
 # IDE
 .idea/
-*.xcuserdatad
 
-# Secrets (never commit these)
-*.p12
-*.mobileprovision
-ExportOptions.plist
-.env
-
-# Python
-__pycache__/
-*.pyc
-.venv/
-*.db
-server/.outlook_token_cache.bin
-searxng/
-
-# Node
-node_modules/
-web/dist/
+# Runtime
+.server.pid
