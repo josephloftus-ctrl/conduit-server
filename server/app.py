@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from fastapi import FastAPI, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
@@ -35,6 +35,27 @@ memory_module = None
 
 # Telegram bot instance (initialized at startup if configured)
 telegram_bot = None
+
+# Admin token for settings mutation endpoints.
+# If CONDUIT_ADMIN_TOKEN is set in .env, all PUT/POST /api/settings/* require it.
+# If not set, endpoints work without auth (backwards compatible).
+ADMIN_TOKEN = os.getenv("CONDUIT_ADMIN_TOKEN", "")
+
+
+async def require_admin(authorization: str = Header(default="")) -> None:
+    """Dependency that enforces admin token on settings endpoints.
+
+    If CONDUIT_ADMIN_TOKEN is not configured, all requests pass through
+    (backwards compatible). If configured, the request must include a
+    matching Authorization: Bearer <token> header.
+    """
+    if not ADMIN_TOKEN:
+        return
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Admin token required")
+    token = authorization.removeprefix("Bearer ").strip()
+    if token != ADMIN_TOKEN:
+        raise HTTPException(status_code=403, detail="Invalid admin token")
 
 
 def _build_providers():
@@ -992,7 +1013,7 @@ async def api_get_settings():
 
 
 @app.put("/api/settings/personality")
-async def api_set_personality(body: dict):
+async def api_set_personality(body: dict, _admin=Depends(require_admin)):
     from .settings import get_config, save_config
     cfg = get_config()
     personality = cfg.setdefault("personality", {})
@@ -1005,7 +1026,7 @@ async def api_set_personality(body: dict):
 
 
 @app.put("/api/settings/providers/{name}")
-async def api_set_provider(name: str, body: dict):
+async def api_set_provider(name: str, body: dict, _admin=Depends(require_admin)):
     from .settings import get_config, save_config, set_env_var
     cfg = get_config()
     providers_cfg = cfg.setdefault("models", {}).setdefault("providers", {})
@@ -1037,7 +1058,7 @@ async def api_set_provider(name: str, body: dict):
 
 
 @app.put("/api/settings/routing")
-async def api_set_routing(body: dict):
+async def api_set_routing(body: dict, _admin=Depends(require_admin)):
     from .settings import get_config, save_config
     cfg = get_config()
     routing = cfg.setdefault("models", {}).setdefault("routing", {})
@@ -1057,7 +1078,7 @@ async def api_set_routing(body: dict):
 
 
 @app.put("/api/settings/scheduler")
-async def api_set_scheduler(body: dict):
+async def api_set_scheduler(body: dict, _admin=Depends(require_admin)):
     from .settings import get_config, save_config
     cfg = get_config()
     sched = cfg.setdefault("scheduler", {})
@@ -1069,7 +1090,7 @@ async def api_set_scheduler(body: dict):
 
 
 @app.put("/api/settings/memory")
-async def api_set_memory(body: dict):
+async def api_set_memory(body: dict, _admin=Depends(require_admin)):
     from .settings import get_config, save_config
     cfg = get_config()
     mem = cfg.setdefault("memory", {})
@@ -1081,11 +1102,20 @@ async def api_set_memory(body: dict):
 
 
 @app.put("/api/settings/tools")
-async def api_set_tools(body: dict):
+async def api_set_tools(body: dict, _admin=Depends(require_admin)):
     from .settings import get_config, save_config
+    # Security-sensitive keys are excluded — these can only be changed via
+    # config.yaml directly or the /permissions WebSocket command (runtime toggle).
+    DANGEROUS_KEYS = {"auto_approve_all", "enabled", "allowed_directories"}
+    rejected = [k for k in body if k in DANGEROUS_KEYS]
+    if rejected:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Cannot modify protected settings via API: {', '.join(rejected)}. Edit config.yaml directly.",
+        )
     cfg = get_config()
     tools_cfg = cfg.setdefault("tools", {})
-    for key in ("enabled", "max_agent_turns", "command_timeout_seconds", "allowed_directories", "auto_approve_reads", "auto_approve_all"):
+    for key in ("max_agent_turns", "command_timeout_seconds", "auto_approve_reads"):
         if key in body:
             tools_cfg[key] = body[key]
     save_config(cfg)
@@ -1093,7 +1123,7 @@ async def api_set_tools(body: dict):
 
 
 @app.put("/api/settings/ntfy")
-async def api_set_ntfy(body: dict):
+async def api_set_ntfy(body: dict, _admin=Depends(require_admin)):
     from .settings import get_config, save_config, set_env_var
     cfg = get_config()
     ntfy_cfg = cfg.setdefault("ntfy", {})
