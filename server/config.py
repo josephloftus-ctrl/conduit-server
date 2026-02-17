@@ -16,7 +16,7 @@ with open(_config_path) as f:
 
 # Server settings
 server = _raw.get("server", {})
-HOST = server.get("host", "0.0.0.0")
+HOST = server.get("host", "127.0.0.1")
 PORT = server.get("port", 8080)
 
 # Personality
@@ -214,7 +214,7 @@ def reload():
         _raw = yaml.safe_load(f)
 
     srv = _raw.get("server", {})
-    HOST = srv.get("host", "0.0.0.0")
+    HOST = srv.get("host", "127.0.0.1")
     PORT = srv.get("port", 8080)
 
     p = _raw.get("personality", {})

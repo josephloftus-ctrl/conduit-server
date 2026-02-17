@@ -101,8 +101,8 @@ async def run_agent_loop(
         )
         if hook_result and "system_prompt" in hook_result:
             system = hook_result["system_prompt"]
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("before_agent_start hook failed: %s", e)
 
     while turns < max_turns:
         turns += 1
@@ -151,8 +151,8 @@ async def run_agent_loop(
                     )
                     if hook_result and "result" in hook_result:
                         result = hook_result["result"]
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.debug("after_tool_call hook failed: %s", e)
 
             result_msg = provider.format_tool_result(tc.id, tc.name, result)
             messages.append(result_msg)
