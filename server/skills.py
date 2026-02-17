@@ -14,6 +14,7 @@ Directory layout expected::
 """
 
 import logging
+import os
 import re
 import shutil
 from pathlib import Path
@@ -27,6 +28,7 @@ log = logging.getLogger(__name__)
 # Module-level skill store
 # ---------------------------------------------------------------------------
 _skills: list[dict] = []
+_skills_dir: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -226,7 +228,8 @@ def load_skills(skills_dir: str) -> list[dict]:
 
     Returns the loaded skills list.
     """
-    global _skills
+    global _skills, _skills_dir
+    _skills_dir = os.path.expanduser(skills_dir)
     _skills = discover_skills(skills_dir)
     log.info("Loaded %d markdown skills from %s", len(_skills), skills_dir)
     return _skills
@@ -240,3 +243,69 @@ def get_skills() -> list[dict]:
 def get_skills_context(user_message: str, max_per_turn: int = 2) -> str:
     """Convenience wrapper: build context from the loaded skills store."""
     return build_skills_context(_skills, user_message, max_injected=max_per_turn)
+
+
+# ---------------------------------------------------------------------------
+# Remote skill installation
+# ---------------------------------------------------------------------------
+
+async def _fetch_url(url: str, timeout: int = 15) -> str:
+    """Fetch content from a URL. Uses aiohttp if available, falls back to urllib."""
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
+                resp.raise_for_status()
+                return await resp.text()
+    except ImportError:
+        import urllib.request
+        import asyncio
+        loop = asyncio.get_event_loop()
+        req = urllib.request.Request(url)
+        def _do():
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read().decode("utf-8")
+        return await loop.run_in_executor(None, _do)
+
+
+async def skill_install(name: str, source: str = "clawhub") -> str:
+    """Install a skill from ClawHub or a URL.
+
+    Args:
+        name: Skill name (used as folder name)
+        source: "clawhub" to fetch from ClawHub, or a URL to a SKILL.md
+    """
+    global _skills_dir
+
+    if not _skills_dir:
+        from . import config
+        _skills_dir = os.path.expanduser(config.MARKDOWN_SKILLS_DIR)
+
+    # Determine URL
+    if source == "clawhub":
+        url = f"https://clawhub.com/api/skills/{name}/download"
+    elif source.startswith("http"):
+        url = source
+    else:
+        return f"Error: invalid source '{source}'. Use 'clawhub' or a URL."
+
+    # Fetch content
+    try:
+        content = await _fetch_url(url)
+    except Exception as e:
+        return f"Error fetching skill: {e}"
+
+    # Validate
+    skill = parse_skill_md(content, name)
+    if skill is None:
+        return f"Error: downloaded content is not a valid SKILL.md (no YAML frontmatter)"
+
+    # Save to skills directory
+    skill_dir = Path(_skills_dir) / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
+
+    # Reload into memory
+    _skills.append(skill)
+
+    return f"Installed skill '{skill['name']}' to {skill_dir}"

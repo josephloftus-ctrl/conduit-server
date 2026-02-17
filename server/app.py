@@ -312,6 +312,27 @@ async def lifespan(app: FastAPI):
             load_skills(config.MARKDOWN_SKILLS_DIR)
         except Exception as e:
             log.warning("Markdown skills not available: %s", e)
+        # Register skill_install tool
+        try:
+            from .skills import skill_install
+            from .tools import register as register_tool
+            from .tools.definitions import ToolDefinition
+            register_tool(ToolDefinition(
+                name="skill_install",
+                description="Install a markdown skill from ClawHub or a URL.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "Skill name (folder name)"},
+                        "source": {"type": "string", "description": "'clawhub' or a URL to SKILL.md"},
+                    },
+                    "required": ["name"],
+                },
+                handler=skill_install,
+                permission="write",
+            ))
+        except Exception as e:
+            log.warning("skill_install tool not available: %s", e)
 
     # Load Python plugins
     if config.PLUGINS_ENABLED:
