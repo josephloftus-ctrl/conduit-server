@@ -286,11 +286,30 @@ class AgentRegistry:
 
     def get_comms_tools(self, agent_id: str) -> list[ToolDefinition]:
         """Return inter-agent communication tools if enabled for this agent."""
-        if not self._comms_enabled:
-            return []
-        if self._comms_allow and agent_id not in self._comms_allow:
-            return []
-        return _build_comms_tools(self, agent_id)
+        tools = []
+
+        # Legacy comms tools
+        if self._comms_enabled:
+            if not self._comms_allow or agent_id in self._comms_allow:
+                tools.extend(_build_comms_tools(self, agent_id))
+
+        # Session tools (subagents)
+        try:
+            from . import config
+            if config.SUBAGENTS_ENABLED:
+                from .subagents import get_registry, build_session_tools
+                registry = get_registry()
+                if registry:
+                    session_key = f"agent:{agent_id}"
+                    session_tools = build_session_tools(
+                        registry, agent_id, session_key, depth=0,
+                        agent_registry=self,
+                    )
+                    tools.extend(session_tools)
+        except Exception:
+            pass
+
+        return tools
 
     def list_agents(self) -> list[dict]:
         """Summary for the /agents command."""

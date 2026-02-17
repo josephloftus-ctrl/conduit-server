@@ -332,6 +332,20 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             log.warning("Plugins not available: %s", e)
 
+    # Initialize subagent system
+    if config.SUBAGENTS_ENABLED:
+        try:
+            from .subagents import init_registry, init_db as init_subagent_db
+            init_registry(
+                max_spawn_depth=config.SUBAGENTS_MAX_SPAWN_DEPTH,
+                max_children=config.SUBAGENTS_MAX_CHILDREN,
+                default_timeout=config.SUBAGENTS_DEFAULT_TIMEOUT,
+            )
+            await init_subagent_db()
+            log.info("Subagent system initialized")
+        except Exception as e:
+            log.warning("Subagent system not available: %s", e)
+
     # Initialize embeddings + vectorstore
     try:
         from . import embeddings as emb_mod
@@ -522,6 +536,27 @@ async def handle_message(ws: WebSocket, data: dict, conversation_id: str):
 
     # Store user message
     await db.add_message(conversation_id, "user", content)
+
+    # Drain subagent announcements
+    if config.SUBAGENTS_ENABLED:
+        try:
+            from .subagents import drain_announcements
+            session_key = f"websocket:main:{conversation_id}"
+            announces = drain_announcements(session_key)
+            if announces:
+                lines = []
+                for a in announces:
+                    lines.append(
+                        f'[Subagent Complete] "{a.get("label", "?")}" '
+                        f'({a.get("status", "?")}). '
+                        f'Result: {a.get("result_summary", "")}'
+                    )
+                announcement_text = "\n".join(lines)
+                content = announcement_text + "\n\n" + content
+                # Update the stored message with announcement context
+                log.info("Injected %d subagent announcements", len(announces))
+        except Exception as e:
+            log.warning("Announcement drain failed: %s", e)
 
     # Check for commands (Tier 0)
     if content.startswith("/"):
