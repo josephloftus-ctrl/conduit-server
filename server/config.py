@@ -91,6 +91,25 @@ SKILL_GROCERY_ENABLED = skills_cfg.get("grocery", {}).get("enabled", True)
 SKILL_EXPENSES_ENABLED = skills_cfg.get("expenses", {}).get("enabled", True)
 SKILL_CALENDAR_ENABLED = skills_cfg.get("calendar", {}).get("enabled", True)
 
+# Markdown Skills (OpenClaw compatible)
+md_skills_cfg = _raw.get("markdown_skills", {})
+MARKDOWN_SKILLS_ENABLED = md_skills_cfg.get("enabled", True)
+MARKDOWN_SKILLS_DIR = md_skills_cfg.get("dir", "~/.conduit/skills")
+MARKDOWN_SKILLS_MAX_PER_TURN = md_skills_cfg.get("max_per_turn", 2)
+
+# Plugins
+plugins_cfg = _raw.get("plugins", {})
+PLUGINS_ENABLED = plugins_cfg.get("enabled", True)
+PLUGINS_DIR = plugins_cfg.get("dir", "~/.conduit/plugins")
+
+# Subagents
+subagents_cfg = agents_cfg.get("subagents", {})
+SUBAGENTS_ENABLED = subagents_cfg.get("enabled", True)
+SUBAGENTS_MAX_SPAWN_DEPTH = subagents_cfg.get("max_spawn_depth", 2)
+SUBAGENTS_MAX_CHILDREN = subagents_cfg.get("max_children", 5)
+SUBAGENTS_DEFAULT_TIMEOUT = subagents_cfg.get("default_timeout", 300)
+SUBAGENTS_SESSION_TTL_MINUTES = subagents_cfg.get("session_ttl_minutes", 60)
+
 # ntfy
 ntfy_cfg = _raw.get("ntfy", {})
 NTFY_SERVER = os.getenv(ntfy_cfg.get("server_env", "NTFY_SERVER"), "")
@@ -176,6 +195,10 @@ def reload():
     global TOOLS_ENABLED, MAX_AGENT_TURNS, COMMAND_TIMEOUT, ALLOWED_DIRECTORIES, AUTO_APPROVE_READS, AUTO_APPROVE_ALL
     global AGENTS_LIST, AGENTS_COMMS, BINDINGS_LIST
     global SKILL_GROCERY_ENABLED, SKILL_EXPENSES_ENABLED, SKILL_CALENDAR_ENABLED
+    global MARKDOWN_SKILLS_ENABLED, MARKDOWN_SKILLS_DIR, MARKDOWN_SKILLS_MAX_PER_TURN
+    global PLUGINS_ENABLED, PLUGINS_DIR
+    global SUBAGENTS_ENABLED, SUBAGENTS_MAX_SPAWN_DEPTH, SUBAGENTS_MAX_CHILDREN
+    global SUBAGENTS_DEFAULT_TIMEOUT, SUBAGENTS_SESSION_TTL_MINUTES
     global NTFY_SERVER, NTFY_TOPIC, NTFY_TOKEN, NTFY_ENABLED
     global TELEGRAM_ENABLED, TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, TELEGRAM_CHAT_ID, TELEGRAM_WEBHOOK_URL
     global WATCHER_ENABLED, WATCHER_DIRECTORIES, SPECTRE_API, WATCHER_SORT_BASE, WATCHER_DEBOUNCE
@@ -256,6 +279,22 @@ def reload():
     SKILL_GROCERY_ENABLED = sk.get("grocery", {}).get("enabled", True)
     SKILL_EXPENSES_ENABLED = sk.get("expenses", {}).get("enabled", True)
     SKILL_CALENDAR_ENABLED = sk.get("calendar", {}).get("enabled", True)
+
+    mds = _raw.get("markdown_skills", {})
+    MARKDOWN_SKILLS_ENABLED = mds.get("enabled", True)
+    MARKDOWN_SKILLS_DIR = mds.get("dir", "~/.conduit/skills")
+    MARKDOWN_SKILLS_MAX_PER_TURN = mds.get("max_per_turn", 2)
+
+    plg = _raw.get("plugins", {})
+    PLUGINS_ENABLED = plg.get("enabled", True)
+    PLUGINS_DIR = plg.get("dir", "~/.conduit/plugins")
+
+    sub = ag.get("subagents", {})
+    SUBAGENTS_ENABLED = sub.get("enabled", True)
+    SUBAGENTS_MAX_SPAWN_DEPTH = sub.get("max_spawn_depth", 2)
+    SUBAGENTS_MAX_CHILDREN = sub.get("max_children", 5)
+    SUBAGENTS_DEFAULT_TIMEOUT = sub.get("default_timeout", 300)
+    SUBAGENTS_SESSION_TTL_MINUTES = sub.get("session_ttl_minutes", 60)
 
     n = _raw.get("ntfy", {})
     NTFY_SERVER = os.getenv(n.get("server_env", "NTFY_SERVER"), "")

@@ -124,6 +124,13 @@ agents:
     allow: [default, researcher, coder, operations, analyst]
     max_rounds: 5
 
+  subagents:
+    enabled: true
+    max_spawn_depth: 2
+    max_children: 5
+    default_timeout: 300
+    session_ttl_minutes: 60
+
 bindings:
   - agent_id: coder
     command: "/code"
@@ -196,6 +203,15 @@ skills:
     enabled: true
   calendar:
     enabled: true
+
+markdown_skills:
+  enabled: true
+  dir: "~/.conduit/skills"
+  max_per_turn: 2
+
+plugins:
+  enabled: true
+  dir: "~/.conduit/plugins"
 
 ntfy:
   server_env: "NTFY_SERVER"
