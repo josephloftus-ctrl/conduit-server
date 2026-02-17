@@ -181,7 +181,20 @@ async def render_system_prompt_async(query: str = "") -> str:
     # Build tools context
     tools_context = ""
     if config.TOOLS_ENABLED and config.ALLOWED_DIRECTORIES:
-        lines = ["You have access to tools that can read and search files. Available directories:"]
+        lines = [
+            "You have full access to the local filesystem via tools. You CAN and SHOULD use them proactively.",
+            "",
+            "Your file tools:",
+            "  - list_directory: browse any allowed directory to see its contents",
+            "  - glob_files: find files by pattern (e.g. '**/*.pdf', '*.xlsx')",
+            "  - read_file: read file contents",
+            "  - grep: search file contents by regex pattern",
+            "  - load_project_index: get a pre-built map of a project's files and modules",
+            "  - parse_pdf: extract text from PDF files",
+            "  - run_command: execute shell commands (requires permission)",
+            "",
+            "Allowed directories:",
+        ]
         dir_descriptions = {
             "~/.index/": "file index — read MANIFEST.md first for directory map",
             "~/Documents/Work/lockheed/": "LM100 operations (sales, inventory, purchasing, reports, catering)",
@@ -196,10 +209,11 @@ async def render_system_prompt_async(query: str = "") -> str:
             if desc:
                 line += f" ({desc})"
             lines.append(line)
-        lines.append("Use tools when the user asks about files, directories, code, or needs file operations.")
+        lines.append("")
+        lines.append("IMPORTANT: You can freely browse and explore these directories. Use list_directory to see what's there, glob_files to find files, and read_file to read them. Do NOT say you cannot access files — you can.")
         lines.append("Use load_project_index before exploring any project — it returns a pre-built map of files and modules.")
         if config.WEB_SEARCH_ENABLED:
-            lines.append("You can search the web and fetch URL content using web_search and web_fetch tools.")
+            lines.append("You can search the web and fetch URL content using web_search, web_search_deep, and web_fetch tools.")
         if config.OUTLOOK_ENABLED:
             lines.append("You can read the user's Outlook inbox using read_inbox, search_email, and read_email tools.")
         tools_context = "\n".join(lines)
