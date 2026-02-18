@@ -6,10 +6,14 @@
   let settings = $state(null);
   let memories = $state([]);
   let usage = $state(null);
+  let systemInfo = $state(null);
   let activeTab = $state('providers');
   let loading = $state(true);
   let saving = $state(false);
   let testResult = $state(null);
+  let rawYaml = $state('');
+  let rawPath = $state('');
+  let rawDirty = $state(false);
 
   // ChatGPT OAuth flow state
   let chatgptFlow = $state(null);  // {user_code, verification_uri, device_code}
@@ -46,6 +50,8 @@
     { id: 'schedule', label: 'Schedule' },
     { id: 'memory', label: 'Memory' },
     { id: 'notifications', label: 'Notifications' },
+    { id: 'system', label: 'System' },
+    { id: 'raw', label: 'Raw YAML' },
     { id: 'usage', label: 'Usage' },
   ];
 
@@ -57,17 +63,35 @@
     if (open) loadAll();
   });
 
+  async function fetchJson(url, fallback = null) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) return fallback;
+      return await res.json();
+    } catch {
+      return fallback;
+    }
+  }
+
   async function loadAll() {
     loading = true;
     try {
-      const [s, m, u] = await Promise.all([
-        fetch('/api/settings').then(r => r.json()),
-        fetch('/api/memories').then(r => r.json()),
-        fetch('/api/settings/usage').then(r => r.json()),
+      const [s, m, u, sys, raw] = await Promise.all([
+        fetchJson('/api/settings', {}),
+        fetchJson('/api/memories', []),
+        fetchJson('/api/settings/usage', {}),
+        fetchJson('/api/settings/system', null),
+        fetchJson('/api/settings/raw', null),
       ]);
       settings = s;
       memories = m || [];
       usage = u;
+      systemInfo = sys;
+      if (raw && typeof raw.yaml === 'string') {
+        rawYaml = raw.yaml;
+        rawPath = raw.path || '';
+        rawDirty = false;
+      }
 
       // Populate editable fields
       personalityName = s.personality?.name || '';
@@ -147,6 +171,44 @@
   async function deleteMemory(id) {
     await fetch(`/api/memories/${id}`, { method: 'DELETE' });
     memories = memories.filter(m => m.id !== id);
+  }
+
+  async function saveRawYaml() {
+    if (!rawYaml.trim()) {
+      testResult = { ok: false, message: 'Raw YAML cannot be empty' };
+      return;
+    }
+    saving = true;
+    try {
+      const res = await fetch('/api/settings/raw', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ yaml: rawYaml }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) {
+        rawDirty = false;
+        testResult = { ok: true, message: 'Raw YAML saved and reloaded' };
+        await loadAll();
+      } else {
+        testResult = { ok: false, message: data.detail || data.error || `Save failed (${res.status})` };
+      }
+    } catch (e) {
+      testResult = { ok: false, message: 'Raw save failed: ' + e.message };
+    }
+    saving = false;
+  }
+
+  async function reloadRawYaml() {
+    const raw = await fetchJson('/api/settings/raw', null);
+    if (raw && typeof raw.yaml === 'string') {
+      rawYaml = raw.yaml;
+      rawPath = raw.path || rawPath;
+      rawDirty = false;
+      testResult = { ok: true, message: 'Reloaded raw YAML from disk' };
+    } else {
+      testResult = { ok: false, message: 'Could not reload raw YAML' };
+    }
   }
 
   async function startChatGPTAuth() {
@@ -508,6 +570,99 @@
         </div>
       </div>
 
+    {:else if activeTab === 'system'}
+      <div class="section">
+        {#if systemInfo}
+          <div class="card">
+            <div class="card-header"><strong>Runtime Health</strong></div>
+            <div class="card-body">
+              <div class="field"><span class="field-label">Status</span><span class="value">{systemInfo.health?.status || 'unknown'}</span></div>
+              <div class="field"><span class="field-label">Uptime</span><span class="value">{systemInfo.health?.uptime_seconds || 0}s</span></div>
+              <div class="field"><span class="field-label">Providers</span><span class="value">{(systemInfo.health?.providers || []).join(', ') || '-'}</span></div>
+              <div class="field"><span class="field-label">Worker</span><span class="value">{systemInfo.health?.worker_phase || 'unknown'}</span></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header"><strong>Feature Flags</strong></div>
+            <div class="card-body">
+              {#each Object.entries(systemInfo.features || {}) as [k, v]}
+                {#if k !== 'outlook'}
+                  <div class="field">
+                    <span class="field-label mono">{k}</span>
+                    <span class="value">{typeof v === 'boolean' ? (v ? 'enabled' : 'disabled') : String(v)}</span>
+                  </div>
+                {/if}
+              {/each}
+              <div class="field"><span class="field-label">outlook</span><span class="value">{systemInfo.features?.outlook?.enabled ? 'enabled' : 'disabled'} | configured: {systemInfo.features?.outlook?.configured ? 'yes' : 'no'} | auth: {systemInfo.features?.outlook?.authenticated ? 'yes' : 'no'}</span></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header"><strong>Plugin Registry</strong></div>
+            <div class="card-body">
+              {#if systemInfo.plugins?.length}
+                {#each systemInfo.plugins as plugin}
+                  <div class="memory-item">
+                    <span class="badge">{plugin.id}</span>
+                    <span class="memory-text">{plugin.version || '0.0.0'} • tools: {(plugin.tools || []).length} • hooks: {(plugin.hooks || []).length}</span>
+                  </div>
+                {/each}
+              {:else}
+                <div class="empty">No plugins loaded</div>
+              {/if}
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header"><strong>Scheduled Tasks</strong></div>
+            <div class="card-body">
+              {#if systemInfo.scheduled_tasks?.length}
+                {#each systemInfo.scheduled_tasks as task}
+                  <div class="memory-item">
+                    <span class="badge">{task.enabled ? 'on' : 'off'}</span>
+                    <span class="memory-text">{task.name} • {task.cron} • tier {task.model_tier}</span>
+                  </div>
+                {/each}
+              {:else}
+                <div class="empty">No custom scheduled tasks</div>
+              {/if}
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header"><strong>Paths</strong></div>
+            <div class="card-body">
+              <div class="field"><span class="field-label">config</span><span class="value mono">{systemInfo.paths?.config || '-'}</span></div>
+              <div class="field"><span class="field-label">env</span><span class="value mono">{systemInfo.paths?.env || '-'}</span></div>
+              <div class="field"><span class="field-label">plugins</span><span class="value mono">{systemInfo.paths?.plugins_dir || '-'}</span></div>
+            </div>
+          </div>
+        {:else}
+          <div class="empty">System diagnostics unavailable</div>
+        {/if}
+      </div>
+
+    {:else if activeTab === 'raw'}
+      <div class="section">
+        <div class="form-group">
+          <label for="raw-config-editor">Raw Config YAML</label>
+          <div class="hint">Editing path: {rawPath || 'server/config.yaml'}</div>
+          <textarea
+            id="raw-config-editor"
+            class="raw-editor"
+            bind:value={rawYaml}
+            rows="26"
+            oninput={() => rawDirty = true}
+          ></textarea>
+        </div>
+        <div class="btn-row">
+          <button class="btn" disabled={saving || !rawDirty} onclick={saveRawYaml}>Save Raw YAML</button>
+          <button class="btn btn-secondary" disabled={saving} onclick={reloadRawYaml}>Reload From Disk</button>
+        </div>
+        <div class="hint">This writes directly to config.yaml and reloads server config immediately.</div>
+      </div>
+
     {:else if activeTab === 'usage'}
       <div class="section">
         {#if usage}
@@ -725,6 +880,12 @@
     resize: vertical;
     font-family: monospace;
     font-size: 12px;
+  }
+  .raw-editor {
+    min-height: 420px;
+    line-height: 1.35;
+    tab-size: 2;
+    white-space: pre;
   }
   .form-group input[type="range"] {
     width: 100%;

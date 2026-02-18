@@ -797,14 +797,17 @@ async def handle_message(ws: WebSocket, data: dict, conversation_id: str):
             await manager.send_error(ws, f"All providers failed: {e}")
             return
 
-    # Send meta before done so client has model info when message finalizes
+    # Send meta (model info) then done — done MUST always be sent to unlock client
     if usage:
         await manager.send_meta(ws, provider.model, usage.input_tokens, usage.output_tokens)
-        await db.log_usage(provider.name, provider.model, usage.input_tokens, usage.output_tokens)
 
     log.info("Sending 'done' to client for conversation %s", conversation_id)
     await manager.send_done(ws)
     log.info("'done' sent successfully")
+
+    # Log usage after done so a db error can't block the client
+    if usage:
+        await db.log_usage(provider.name, provider.model, usage.input_tokens, usage.output_tokens)
 
     # Store assistant message
     if response_text:
@@ -1072,6 +1075,87 @@ async def api_delete_conversation(cid: str):
 async def api_get_settings():
     from .settings import get_full_settings
     return get_full_settings()
+
+
+@app.get("/api/settings/system")
+async def api_get_system_settings():
+    from .settings import CONFIG_PATH, ENV_PATH
+
+    plugins = []
+    try:
+        from .plugins import get_loaded_plugins
+        plugins = get_loaded_plugins()
+    except Exception:
+        plugins = []
+
+    scheduled = await db.get_scheduled_tasks()
+
+    outlook_state = {
+        "enabled": bool(config.OUTLOOK_ENABLED),
+        "configured": False,
+        "authenticated": False,
+        "poll_interval_minutes": int(config.OUTLOOK_POLL_INTERVAL),
+    }
+    try:
+        from . import outlook
+        outlook_state["configured"] = bool(outlook.is_configured())
+        outlook_state["authenticated"] = bool(outlook.get_access_token())
+    except Exception:
+        pass
+
+    return {
+        "health": await api_health(),
+        "plugins": plugins,
+        "scheduled_tasks": scheduled,
+        "paths": {
+            "config": str(CONFIG_PATH),
+            "env": str(ENV_PATH),
+            "plugins_dir": config.PLUGINS_DIR,
+        },
+        "features": {
+            "tools_enabled": bool(config.TOOLS_ENABLED),
+            "watcher_enabled": bool(config.WATCHER_ENABLED),
+            "worker_enabled": bool(config.WORKER_ENABLED),
+            "markdown_skills_enabled": bool(config.MARKDOWN_SKILLS_ENABLED),
+            "plugins_enabled": bool(config.PLUGINS_ENABLED),
+            "subagents_enabled": bool(config.SUBAGENTS_ENABLED),
+            "voice_enabled": bool(config.VOICE_ENABLED),
+            "outlook": outlook_state,
+            "telegram_enabled": bool(config.TELEGRAM_ENABLED),
+            "ntfy_enabled": bool(config.NTFY_ENABLED),
+        },
+    }
+
+
+@app.get("/api/settings/raw")
+async def api_get_settings_raw():
+    from .settings import CONFIG_PATH
+    return {
+        "ok": True,
+        "path": str(CONFIG_PATH),
+        "yaml": CONFIG_PATH.read_text(),
+    }
+
+
+@app.put("/api/settings/raw")
+async def api_set_settings_raw(body: dict, _admin=Depends(require_admin)):
+    from .settings import save_config
+    import yaml
+
+    yaml_text = body.get("yaml", "")
+    if not isinstance(yaml_text, str) or not yaml_text.strip():
+        raise HTTPException(status_code=400, detail="Missing yaml text")
+
+    try:
+        parsed = yaml.safe_load(yaml_text)
+    except yaml.YAMLError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid YAML: {exc}") from exc
+
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=400, detail="Top-level YAML must be a mapping/object")
+
+    save_config(parsed)
+    return {"ok": True}
 
 
 @app.put("/api/settings/personality")
