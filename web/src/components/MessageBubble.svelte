@@ -9,34 +9,9 @@
   // Configure marked once at module level (not per-instance)
   marked.setOptions({ breaks: true, gfm: true });
 
-  // Throttled markdown rendering during streaming to avoid
-  // re-parsing the entire message on every token
-  let lastParsed = $state('');
-  let lastInput = '';
-  let parseTimer = null;
-
   let rendered = $derived.by(() => {
     if (msg.role === 'user') return escapeHtml(msg.content);
     const content = msg.content || '';
-
-    if (msg.streaming) {
-      // During streaming, throttle markdown parsing to ~60ms intervals
-      if (content !== lastInput) {
-        lastInput = content;
-        if (!parseTimer) {
-          parseTimer = setTimeout(() => {
-            parseTimer = null;
-            lastParsed = DOMPurify.sanitize(marked.parse(lastInput));
-          }, 60);
-        }
-      }
-      return lastParsed || DOMPurify.sanitize(marked.parse(content));
-    }
-
-    // Final render — no throttle
-    lastInput = '';
-    lastParsed = '';
-    if (parseTimer) { clearTimeout(parseTimer); parseTimer = null; }
     return DOMPurify.sanitize(marked.parse(content));
   });
 
