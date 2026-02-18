@@ -296,11 +296,8 @@ setMessageHandler((msg) => {
     }
 
     case 'meta':
-      // Safety net: meta arrives right after done — clear any leftover streaming state
-      if (get(isStreaming)) {
-        console.warn('[chat] meta: isStreaming still true — force-clearing');
-        forceUnlockStream();
-      }
+      // Meta now arrives before done — just store model info on the message.
+      // The badge renders after done clears streaming state.
       lastMeta.set({
         model: msg.model,
         inputTokens: msg.input_tokens,

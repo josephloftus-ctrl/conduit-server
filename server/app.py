@@ -797,14 +797,14 @@ async def handle_message(ws: WebSocket, data: dict, conversation_id: str):
             await manager.send_error(ws, f"All providers failed: {e}")
             return
 
-    log.info("Sending 'done' to client for conversation %s", conversation_id)
-    await manager.send_done(ws)
-    log.info("'done' sent successfully")
-
-    # Send meta info
+    # Send meta before done so client has model info when message finalizes
     if usage:
         await manager.send_meta(ws, provider.model, usage.input_tokens, usage.output_tokens)
         await db.log_usage(provider.name, provider.model, usage.input_tokens, usage.output_tokens)
+
+    log.info("Sending 'done' to client for conversation %s", conversation_id)
+    await manager.send_done(ws)
+    log.info("'done' sent successfully")
 
     # Store assistant message
     if response_text:
