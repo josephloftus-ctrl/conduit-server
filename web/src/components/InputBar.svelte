@@ -38,8 +38,10 @@
   );
 
   function handleSubmit() {
+    console.log('[input] handleSubmit called, input length:', input.trim().length);
     if (!input.trim()) return;
     const sent = sendMessage(input);
+    console.log('[input] sendMessage returned:', sent);
     if (sent) {
       input = '';
       autoResize();
@@ -49,6 +51,7 @@
   function handleKeydown(e) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
+      console.log('[input] Enter pressed, calling handleSubmit');
       handleSubmit();
     }
     if (e.key === 'Tab' && showHints && filteredHints.length > 0) {

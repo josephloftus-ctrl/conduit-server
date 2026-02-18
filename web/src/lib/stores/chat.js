@@ -446,11 +446,14 @@ export function sendMessage(content) {
 
   // Check connection state before sending
   const state = get(connectionState);
+  console.log('[chat] sendMessage: connectionState=%s, isStreaming=%s, expectingStream=%s',
+    state, get(isStreaming), expectingStream);
   if (state !== 'ready') {
+    console.warn('[chat] sendMessage: not connected (%s)', state);
     messages.update(msgs => [...msgs, {
       id: uniqueId(),
       role: 'error',
-      content: 'Not connected to server. Reconnecting...',
+      content: `Not connected to server (${state}). Reconnecting...`,
     }]);
     return false;
   }
@@ -459,6 +462,7 @@ export function sendMessage(content) {
   // (don't call forceUnlockStream — it modifies messages and causes
   // auto-scroll which steals focus on mobile)
   if (get(isStreaming)) {
+    console.warn('[chat] sendMessage: clearing stuck streaming state');
     expectingStream = false;
     isStreaming.set(false);
     isTyping.set(false);
@@ -473,7 +477,9 @@ export function sendMessage(content) {
 
   // Try WS send FIRST — only add user message if it actually went through
   const sent = send({ type: 'message', content: content.trim() });
+  console.log('[chat] sendMessage: ws.send returned', sent);
   if (!sent) {
+    console.error('[chat] sendMessage: WS send failed');
     messages.update(msgs => [...msgs, {
       id: uniqueId(),
       role: 'error',
@@ -490,6 +496,7 @@ export function sendMessage(content) {
   }]);
   expectingStream = true;
   streamStartedAt = Date.now();
+  console.log('[chat] sendMessage: success, expecting stream');
   return true;
 }
 
