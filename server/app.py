@@ -797,12 +797,14 @@ async def handle_message(ws: WebSocket, data: dict, conversation_id: str):
             await manager.send_error(ws, f"All providers failed: {e}")
             return
 
-    # Send meta (model info) then done — done MUST always be sent to unlock client
-    if usage:
-        await manager.send_meta(ws, provider.model, usage.input_tokens, usage.output_tokens)
+    # Always send meta with model name (even if usage is None/zero)
+    in_tok = usage.input_tokens if usage else 0
+    out_tok = usage.output_tokens if usage else 0
+    await manager.send_meta(ws, provider.model, in_tok, out_tok)
 
-    log.info("Sending 'done' to client for conversation %s", conversation_id)
-    await manager.send_done(ws)
+    log.info("Sending 'done' (model=%s) to client for conversation %s",
+             provider.model, conversation_id)
+    await manager.send_done(ws, model=provider.model)
     log.info("'done' sent successfully")
 
     # Log usage after done so a db error can't block the client
@@ -1156,6 +1158,171 @@ async def api_set_settings_raw(body: dict, _admin=Depends(require_admin)):
 
     save_config(parsed)
     return {"ok": True}
+
+
+def _body_string_list(value: object) -> list[str]:
+    if value is None:
+        return []
+    raw_items: list[str] = []
+    if isinstance(value, str):
+        raw_items = [chunk.strip() for chunk in value.replace(",", "\n").splitlines()]
+    elif isinstance(value, list):
+        raw_items = [str(item).strip() for item in value]
+    else:
+        return []
+    return [item for item in raw_items if item]
+
+
+def _body_store_locations(value: object) -> list[dict[str, str]] | None:
+    if value is None:
+        return None
+    locations: list[dict[str, str]] = []
+    if isinstance(value, str):
+        for line in value.splitlines():
+            text = line.strip()
+            if not text:
+                continue
+            if ":" in text:
+                store, _, zip_hint = text.partition(":")
+            elif "," in text:
+                store, _, zip_hint = text.partition(",")
+            else:
+                store, zip_hint = text, ""
+            if store.strip():
+                locations.append({"store": store.strip(), "zip_hint": zip_hint.strip()})
+        return locations
+    if isinstance(value, list):
+        for row in value:
+            if isinstance(row, dict):
+                store = str(row.get("store", "")).strip()
+                zip_hint = str(row.get("zip_hint", "")).strip()
+                if store:
+                    locations.append({"store": store, "zip_hint": zip_hint})
+            elif isinstance(row, str):
+                parts = row.split(":", 1)
+                store = parts[0].strip()
+                zip_hint = parts[1].strip() if len(parts) == 2 else ""
+                if store:
+                    locations.append({"store": store, "zip_hint": zip_hint})
+        return locations
+    return None
+
+
+@app.get("/api/settings/cost-hunter")
+async def api_get_cost_hunter():
+    from . import receipt_cost_hunter as rch
+
+    payload = rch.get_dashboard_snapshot()
+    outlook_state = {
+        "enabled": bool(config.OUTLOOK_ENABLED),
+        "configured": False,
+        "authenticated": False,
+    }
+    try:
+        from . import outlook
+        outlook_state["configured"] = bool(outlook.is_configured())
+        outlook_state["authenticated"] = bool(outlook.get_access_token())
+    except Exception:
+        pass
+
+    return {"ok": True, **payload, "outlook": outlook_state}
+
+
+@app.put("/api/settings/cost-hunter/setup")
+async def api_set_cost_hunter_setup(body: dict, _admin=Depends(require_admin)):
+    from . import receipt_cost_hunter as rch
+
+    result = rch.run_setup_wizard(
+        mode="set",
+        primary_stores=_body_string_list(body.get("primary_stores")) if "primary_stores" in body else None,
+        challenger_stores=_body_string_list(body.get("challenger_stores")) if "challenger_stores" in body else None,
+        diaper_brands=_body_string_list(body.get("diaper_brands")) if "diaper_brands" in body else None,
+        formula_brands=_body_string_list(body.get("formula_brands")) if "formula_brands" in body else None,
+        zip_code=str(body.get("zip_code", "")).strip() if "zip_code" in body else None,
+        store_locations=_body_store_locations(body.get("store_locations")) if "store_locations" in body else None,
+    )
+    settings = rch.get_settings()
+    report = rch.build_cost_report(days=int(settings.get("report_window_days", 30)))
+    return {
+        "ok": True,
+        "result": result,
+        "report": report,
+        "report_text": rch.format_report_text(report),
+    }
+
+
+@app.put("/api/settings/cost-hunter/tuning")
+async def api_set_cost_hunter_tuning(body: dict, _admin=Depends(require_admin)):
+    from . import receipt_cost_hunter as rch
+
+    settings = rch.update_settings(body or {})
+    report = rch.build_cost_report(days=int(settings.get("report_window_days", 30)))
+    return {
+        "ok": True,
+        "settings": settings,
+        "report": report,
+        "report_text": rch.format_report_text(report),
+    }
+
+
+@app.post("/api/settings/cost-hunter/sync")
+async def api_sync_cost_hunter(body: dict | None = None, _admin=Depends(require_admin)):
+    from . import receipt_cost_hunter as rch
+
+    body = body or {}
+    settings = rch.get_settings()
+    default_scan = int(settings.get("heartbeat_scan_count", 60))
+    try:
+        scan_count = int(body.get("scan_count", default_scan))
+    except (TypeError, ValueError):
+        scan_count = default_scan
+
+    ingest = await rch.ingest_outlook_receipts(scan_count=scan_count)
+    auto_setup = None
+    if bool(body.get("force_auto_setup")):
+        auto_setup = rch.run_setup_wizard(mode="auto", force=True)
+
+    report_days = int(settings.get("report_window_days", 30))
+    report = rch.build_cost_report(days=report_days)
+    return {
+        "ok": True,
+        "ingest": ingest,
+        "auto_setup": auto_setup,
+        "report": report,
+        "report_text": rch.format_report_text(report),
+    }
+
+
+@app.post("/api/settings/cost-hunter/auto-setup")
+async def api_auto_setup_cost_hunter(body: dict | None = None, _admin=Depends(require_admin)):
+    from . import receipt_cost_hunter as rch
+
+    body = body or {}
+    result = rch.run_setup_wizard(mode="auto", force=bool(body.get("force")))
+    settings = rch.get_settings()
+    report = rch.build_cost_report(days=int(settings.get("report_window_days", 30)))
+    return {
+        "ok": True,
+        "result": result,
+        "report": report,
+        "report_text": rch.format_report_text(report),
+    }
+
+
+@app.get("/api/settings/cost-hunter/report")
+async def api_get_cost_hunter_report(days: int = 0):
+    from . import receipt_cost_hunter as rch
+
+    settings = rch.get_settings()
+    if days <= 0:
+        days = int(settings.get("report_window_days", 30))
+    report = rch.build_cost_report(days=days)
+    return {
+        "ok": True,
+        "days": days,
+        "report": report,
+        "text": rch.format_report_text(report),
+    }
 
 
 @app.put("/api/settings/personality")

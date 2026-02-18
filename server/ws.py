@@ -56,8 +56,11 @@ class ConnectionManager:
     async def send_chunk(self, ws: WebSocket, content: str):
         await self.send(ws, {"type": "chunk", "content": content})
 
-    async def send_done(self, ws: WebSocket):
-        await self.send(ws, {"type": "done"})
+    async def send_done(self, ws: WebSocket, model: str = ""):
+        msg = {"type": "done"}
+        if model:
+            msg["model"] = model
+        await self.send(ws, msg)
 
     async def send_typing(self, ws: WebSocket):
         await self.send(ws, {"type": "typing"})

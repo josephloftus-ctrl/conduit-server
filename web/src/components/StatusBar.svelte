@@ -2,7 +2,7 @@
   import { connectionState } from '../lib/stores/connection.js';
   import { lastMeta, voiceMode, stopSpeaking, isStreaming } from '../lib/stores/chat.js';
 
-  const BUILD_ID = 'v11';
+  const BUILD_ID = 'v12';
 
   function toggleVoice() {
     voiceMode.update(v => {

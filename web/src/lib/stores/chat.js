@@ -235,6 +235,7 @@ setMessageHandler((msg) => {
       break;
 
     case 'typing':
+      console.log('[chat] typing received, expectingStream:', expectingStream);
       if (!expectingStream) return;
       streamGeneration = generation;
       streamStartedAt = Date.now();
@@ -261,6 +262,7 @@ setMessageHandler((msg) => {
     }
 
     case 'done': {
+      console.log('[chat] done received, model:', msg.model || '(none)');
       expectingStream = false;
       isStreaming.set(false);
       isTyping.set(false);
@@ -274,6 +276,7 @@ setMessageHandler((msg) => {
         speakResponse(streamBuffer);
       }
       // Finalize any message still marked as streaming
+      const doneModel = msg.model || null;
       messages.update(msgs => {
         const updated = msgs.slice();
         let changed = false;
@@ -283,6 +286,7 @@ setMessageHandler((msg) => {
               ...updated[i],
               id: updated[i].id === '_streaming' ? uniqueId() : updated[i].id,
               content: (i === updated.length - 1 && streamBuffer) ? streamBuffer : updated[i].content,
+              model: updated[i].model || doneModel,
               streaming: false,
             };
             changed = true;
@@ -371,6 +375,7 @@ setMessageHandler((msg) => {
       break;
 
     case 'error':
+      console.log('[chat] error received:', msg.message);
       expectingStream = false;
       isStreaming.set(false);
       isTyping.set(false);

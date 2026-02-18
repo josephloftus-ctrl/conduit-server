@@ -81,7 +81,7 @@
     {/if}
   {/if}
 
-  {#if msg.role === 'assistant' && modelBadge && !($isStreaming && msg.streaming)}
+  {#if msg.role === 'assistant' && modelBadge}
     <div class="meta">
       <span class="model-badge">{modelBadge}</span>
     </div>
