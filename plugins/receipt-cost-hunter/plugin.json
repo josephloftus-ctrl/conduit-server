@@ -1,0 +1,7 @@
+{
+  "id": "receipt-cost-hunter",
+  "name": "Receipt Cost Hunter",
+  "description": "Auto-ingests Outlook receipts, infers baby-item store preferences, and maintains a cost-hunting profile.",
+  "version": "1.0.0"
+}
+

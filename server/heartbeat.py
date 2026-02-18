@@ -46,6 +46,8 @@ async def _get_idle_minutes() -> float:
 
 async def check(manager: ConnectionManager):
     """Main heartbeat check — called by scheduler every HEARTBEAT_INTERVAL minutes."""
+    await _dispatch_plugin_heartbeat(manager)
+
     if not _in_active_hours():
         return
 
@@ -82,6 +84,20 @@ async def check(manager: ConnectionManager):
             _sent_today["idle_count"] = _sent_today.get("idle_count", 0) + 1
             # Reset idle tracking so it doesn't fire again until activity + idle
             await db.kv_set("last_user_activity", str(datetime.now().timestamp()))
+
+
+async def _dispatch_plugin_heartbeat(manager: ConnectionManager):
+    """Run plugin heartbeat hooks once per scheduler tick."""
+    try:
+        from .plugins import dispatch_hook
+        await dispatch_hook(
+            "heartbeat_tick",
+            manager=manager,
+            sent_today=dict(_sent_today),
+            now=datetime.now().isoformat(),
+        )
+    except Exception as e:
+        log.debug("heartbeat_tick hook dispatch failed: %s", e)
 
 
 async def _morning_heartbeat(manager: ConnectionManager):

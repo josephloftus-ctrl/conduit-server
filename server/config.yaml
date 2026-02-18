@@ -212,7 +212,7 @@ markdown_skills:
   max_per_turn: 2
 plugins:
   enabled: true
-  dir: ~/.conduit/plugins
+  dir: plugins
 ntfy:
   server_env: NTFY_SERVER
   topic_env: NTFY_TOPIC
