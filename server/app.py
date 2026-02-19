@@ -140,6 +140,7 @@ def _collect_service_status() -> list[dict]:
 
 def _probe_url(url: str, method: str = "GET", timeout_seconds: float = 3.0) -> dict:
     req = urlrequest.Request(url, method=method)
+    req.add_header("User-Agent", "Conduit-StatusCheck/1.0")
     try:
         with urlrequest.urlopen(req, timeout=timeout_seconds) as res:
             status = int(getattr(res, "status", 200))
