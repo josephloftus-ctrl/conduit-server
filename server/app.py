@@ -4,13 +4,16 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib import error as urlerror
+from urllib import request as urlrequest
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import Response
+from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import config, db
@@ -42,6 +45,32 @@ telegram_bot = None
 # If CONDUIT_ADMIN_TOKEN is set in .env, all PUT/POST /api/settings/* require it.
 # If not set, endpoints work without auth (backwards compatible).
 ADMIN_TOKEN = os.getenv("CONDUIT_ADMIN_TOKEN", "")
+STATUS_DASHBOARD_HOST = "status.josephloftus.com"
+STATUS_SERVICE_NAMES = [
+    "conduit-server",
+    "conduit-search",
+    "conduit-spectre",
+    "conduit-brief",
+    "conduit-ntfy",
+    "conduit-nginx",
+    "conduit-tunnel",
+    "conduit-crond",
+]
+STATUS_LOCAL_CHECKS = [
+    {"name": "conduit-server", "url": "http://127.0.0.1:8080/api/health"},
+    {"name": "conduit-search", "url": "http://127.0.0.1:8889/health"},
+    {"name": "conduit-spectre", "url": "http://127.0.0.1:8000/api/health"},
+    {"name": "brief", "url": "http://127.0.0.1:5050/"},
+    {"name": "ntfy", "url": "http://127.0.0.1:2586/v1/health"},
+    {"name": "steady-spectre", "url": "http://127.0.0.1:8090/"},
+]
+STATUS_PUBLIC_HOSTS = [
+    "conduit.josephloftus.com",
+    "status.josephloftus.com",
+    "steady.josephloftus.com",
+    "brief.josephloftus.com",
+    "ntfy.josephloftus.com",
+]
 
 
 async def require_admin(authorization: str = Header(default="")) -> None:
@@ -58,6 +87,258 @@ async def require_admin(authorization: str = Header(default="")) -> None:
     token = authorization.removeprefix("Bearer ").strip()
     if token != ADMIN_TOKEN:
         raise HTTPException(status_code=403, detail="Invalid admin token")
+
+
+def _host_name(request: Request) -> str:
+    host = request.headers.get("host", "").strip().lower()
+    if ":" in host:
+        host = host.split(":", 1)[0]
+    return host
+
+
+def _is_status_dashboard_host(request: Request) -> bool:
+    return _host_name(request) == STATUS_DASHBOARD_HOST
+
+
+def _run_command(args: list[str], timeout_seconds: float = 3.0) -> tuple[int, str, str]:
+    try:
+        proc = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+        return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+    except Exception as exc:
+        return 127, "", str(exc)
+
+
+def _collect_service_status() -> list[dict]:
+    prefix = os.getenv("PREFIX", "/data/data/com.termux/files/usr")
+    sv_dir = Path(prefix) / "var" / "service"
+    rows: list[dict] = []
+    for name in STATUS_SERVICE_NAMES:
+        rc, out, err = _run_command(["sv", "status", str(sv_dir / name)], timeout_seconds=2.0)
+        raw = out or err
+        state = "unknown"
+        if raw.startswith("run:"):
+            state = "run"
+        elif raw.startswith("down:"):
+            state = "down"
+        elif rc != 0:
+            state = "error"
+        rows.append(
+            {
+                "service": name,
+                "state": state,
+                "raw": raw or "(no output)",
+            }
+        )
+    return rows
+
+
+def _probe_url(url: str, method: str = "GET", timeout_seconds: float = 3.0) -> dict:
+    req = urlrequest.Request(url, method=method)
+    try:
+        with urlrequest.urlopen(req, timeout=timeout_seconds) as res:
+            status = int(getattr(res, "status", 200))
+            return {
+                "url": url,
+                "ok": 200 <= status < 300,
+                "status": status,
+            }
+    except urlerror.HTTPError as exc:
+        return {
+            "url": url,
+            "ok": False,
+            "status": int(exc.code),
+            "error": str(exc),
+        }
+    except Exception as exc:
+        return {
+            "url": url,
+            "ok": False,
+            "status": 0,
+            "error": str(exc),
+        }
+
+
+def _collect_local_checks() -> list[dict]:
+    rows = []
+    for item in STATUS_LOCAL_CHECKS:
+        result = _probe_url(item["url"], method="GET", timeout_seconds=3.0)
+        result["name"] = item["name"]
+        rows.append(result)
+    return rows
+
+
+def _collect_public_checks() -> list[dict]:
+    rows = []
+    for host in STATUS_PUBLIC_HOSTS:
+        result = _probe_url(f"https://{host}", method="HEAD", timeout_seconds=4.0)
+        result["host"] = host
+        rows.append(result)
+    return rows
+
+
+def _collect_tunnel_summary() -> dict:
+    rc, out, err = _run_command(["cloudflared", "tunnel", "list"], timeout_seconds=5.0)
+    text = out or err
+    connector_line = ""
+    for line in text.splitlines():
+        if "conduit-tablet" in line:
+            connector_line = line.strip()
+            break
+    return {
+        "ok": rc == 0,
+        "summary": connector_line or "(conduit-tablet tunnel row not found)",
+        "raw": text.strip(),
+    }
+
+
+def _status_dashboard_html() -> str:
+    return """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Conduit Status</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500&display=swap" rel="stylesheet">
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{
+      font-family:'Outfit',sans-serif;
+      background:#0a0a0f;
+      background-image:radial-gradient(ellipse at 50% 0%,rgba(108,140,255,.03) 0%,transparent 60%);
+      color:#e4e4ef;
+      min-height:100vh;
+      -webkit-font-smoothing:antialiased;
+    }
+    .c{
+      max-width:580px;margin:0 auto;padding:60px 24px 48px;
+      opacity:0;animation:up .5s ease-out forwards;
+    }
+    @keyframes up{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+
+    /* header */
+    .hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:48px}
+    .logo{font-size:13px;font-weight:500;letter-spacing:3px;text-transform:uppercase;color:#6c8cff}
+    .ov{display:flex;align-items:center;gap:8px;font-size:12px;color:#8888a0}
+    .od{width:8px;height:8px;border-radius:50%}
+    .od.ok{background:#4caf80;box-shadow:0 0 8px rgba(76,175,128,.5)}
+    .od.degraded{background:#e09040;box-shadow:0 0 8px rgba(224,144,64,.5)}
+    .od.down{background:#e05050;box-shadow:0 0 8px rgba(224,80,80,.5)}
+
+    /* uptime hero */
+    .ut{margin-bottom:56px}
+    .uv{font-size:52px;font-weight:300;letter-spacing:-2px;color:#fff;line-height:1;margin-bottom:8px;font-variant-numeric:tabular-nums}
+    .ul{font-size:11px;color:#555566;letter-spacing:2px;text-transform:uppercase}
+
+    /* sections */
+    .s{margin-bottom:36px;opacity:0;animation:up .4s ease-out forwards}
+    .s:nth-child(3){animation-delay:.08s}
+    .s:nth-child(4){animation-delay:.14s}
+    .s:nth-child(5){animation-delay:.2s}
+    .sl{font-size:10px;font-weight:500;letter-spacing:2.5px;text-transform:uppercase;color:#444455;margin-bottom:14px}
+
+    /* service grid */
+    .sg{display:grid;grid-template-columns:1fr 1fr;gap:1px 24px}
+    .si{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+    .d{width:6px;height:6px;border-radius:50%;flex-shrink:0;transition:background .3s,box-shadow .3s}
+    .d.ok{background:#4caf80;box-shadow:0 0 6px rgba(76,175,128,.35)}
+    .d.warn{background:#e09040;box-shadow:0 0 6px rgba(224,144,64,.35)}
+    .d.bad{background:#e05050;box-shadow:0 0 6px rgba(224,80,80,.35)}
+    .d.unk{background:#333344}
+    .sn{font-size:13px;color:#b0b0c0}
+
+    /* endpoints */
+    .ei{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+    .eh{font-size:13px;color:#b0b0c0}
+    .ee{margin-left:auto;font-size:11px;color:#e05050}
+
+    /* providers */
+    .pr{display:flex;flex-wrap:wrap;gap:6px}
+    .pp{font-size:11px;padding:4px 12px;border-radius:100px;background:rgba(255,255,255,.04);color:#8888a0;letter-spacing:.3px}
+
+    /* footer */
+    .ft{margin-top:48px;padding-top:20px;border-top:1px solid rgba(255,255,255,.04);display:flex;align-items:center;justify-content:space-between;font-size:11px;color:#444455}
+    .pd{display:inline-block;width:4px;height:4px;border-radius:50%;background:#4caf80;margin-right:6px;animation:pulse 2.5s ease-in-out infinite}
+    @keyframes pulse{0%,100%{opacity:.9}50%{opacity:.2}}
+
+    .err{text-align:center;padding:80px 0;color:#555566;font-size:14px}
+  </style>
+</head>
+<body>
+  <div class="c" id="r"><div class="err">Loading&hellip;</div></div>
+  <script>
+    let bUp=0,lf=0,tt=null;
+    function fmt(s){
+      const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);
+      if(d>0)return d+'d '+h+'h '+m+'m';
+      if(h>0)return h+'h '+m+'m';
+      return m+'m '+Math.floor(s%60)+'s';
+    }
+    function cur(){return bUp+Math.floor((Date.now()-lf)/1000)}
+    function dc(ok,st){
+      if(ok===true||st==='run')return 'ok';
+      if(ok===false||st==='down'||st==='error')return 'bad';
+      return 'unk';
+    }
+    function hl(d){
+      const sv=(d.services||[]).every(s=>s.state==='run');
+      const pb=(d.public_checks||[]).every(c=>c.ok);
+      return sv&&pb?'ok':sv?'degraded':'down';
+    }
+    function render(d){
+      const h=d.health||{},st=hl(d),cc=d.connected_clients||0;
+      const lb=st==='ok'?'All systems operational':st==='degraded'?'Partial degradation':'Systems down';
+      document.getElementById('r').innerHTML=`
+        <div class="hd">
+          <div class="logo">Conduit</div>
+          <div class="ov"><span class="od ${st}"></span>${lb}</div>
+        </div>
+        <div class="ut">
+          <div class="uv" id="tk">${fmt(cur())}</div>
+          <div class="ul">uptime</div>
+        </div>
+        <div class="s">
+          <div class="sl">Services</div>
+          <div class="sg">
+            ${(d.services||[]).map(s=>`<div class="si"><span class="d ${dc(null,s.state)}"></span><span class="sn">${s.service.replace('conduit-','')}</span></div>`).join('')}
+          </div>
+        </div>
+        <div class="s">
+          <div class="sl">Endpoints</div>
+          ${(d.public_checks||[]).map(c=>`<div class="ei"><span class="d ${dc(c.ok)}"></span><span class="eh">${c.host}</span>${c.ok?'':`<span class="ee">${c.error||'unreachable'}</span>`}</div>`).join('')}
+        </div>
+        <div class="s">
+          <div class="sl">Providers</div>
+          <div class="pr">
+            ${(h.providers||[]).map(p=>`<span class="pp">${p}</span>`).join('')}
+          </div>
+        </div>
+        <div class="ft">
+          <span><span class="pd"></span>Refreshing every 30s</span>
+          <span>${cc} client${cc!==1?'s':''}</span>
+        </div>`;
+    }
+    function tick(){const e=document.getElementById('tk');if(e)e.textContent=fmt(cur())}
+    async function refresh(){
+      try{
+        const r=await fetch('/api/server-dashboard',{cache:'no-store'});
+        const d=await r.json();
+        bUp=(d.health||{}).uptime_seconds||0;lf=Date.now();
+        render(d);
+        if(!tt)tt=setInterval(tick,1000);
+      }catch(e){if(!bUp)document.getElementById('r').innerHTML='<div class="err">Unable to reach server</div>'}
+    }
+    refresh();setInterval(refresh,30000);
+  </script>
+</body>
+</html>"""
 
 
 def _build_providers():
@@ -1079,6 +1360,30 @@ async def api_get_settings():
     return get_full_settings()
 
 
+@app.get("/api/server-dashboard")
+async def api_server_dashboard():
+    health = await api_health()
+    services = await asyncio.to_thread(_collect_service_status)
+    local_checks = await asyncio.to_thread(_collect_local_checks)
+    public_checks = await asyncio.to_thread(_collect_public_checks)
+    tunnel = await asyncio.to_thread(_collect_tunnel_summary)
+    return {
+        "ok": True,
+        "generated_at": datetime.now().isoformat(),
+        "health": health,
+        "services": services,
+        "local_checks": local_checks,
+        "public_checks": public_checks,
+        "tunnel": tunnel,
+        "connected_clients": len(manager.active),
+    }
+
+
+@app.get("/server-dashboard")
+async def api_server_dashboard_page():
+    return HTMLResponse(content=_status_dashboard_html())
+
+
 @app.get("/api/settings/system")
 async def api_get_system_settings():
     from .settings import CONFIG_PATH, ENV_PATH
@@ -1693,6 +1998,11 @@ if WEB_DIST.exists():
 @app.middleware("http")
 async def add_cache_headers(request: Request, call_next):
     """Prevent browser caching of index.html so new builds are picked up immediately."""
+    if _is_status_dashboard_host(request) and request.url.path in {"/", "/index.html"}:
+        response = HTMLResponse(content=_status_dashboard_html())
+        response.headers["Cache-Control"] = "no-store, must-revalidate"
+        return response
+
     response = await call_next(request)
     if request.url.path == "/" or request.url.path.endswith(".html"):
         response.headers["Cache-Control"] = "no-store, must-revalidate"
