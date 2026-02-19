@@ -46,6 +46,18 @@ telegram_bot = None
 # If not set, endpoints work without auth (backwards compatible).
 ADMIN_TOKEN = os.getenv("CONDUIT_ADMIN_TOKEN", "")
 STATUS_DASHBOARD_HOST = "status.josephloftus.com"
+_last_cpu_counters: dict | None = None
+_metrics_history: list[dict] = []
+SERVICE_DESCRIPTIONS = {
+    "conduit-server": "AI chat backend",
+    "conduit-search": "Web search engine",
+    "conduit-spectre": "Inventory operations",
+    "conduit-brief": "Daily briefings",
+    "conduit-ntfy": "Push notifications",
+    "conduit-nginx": "Reverse proxy",
+    "conduit-tunnel": "Cloudflare tunnel",
+    "conduit-crond": "Task scheduler",
+}
 STATUS_SERVICE_NAMES = [
     "conduit-server",
     "conduit-search",
@@ -198,6 +210,78 @@ def _collect_tunnel_summary() -> dict:
     }
 
 
+def _collect_system_resources() -> dict:
+    global _last_cpu_counters
+    result: dict = {}
+
+    # CPU from /proc/stat delta
+    try:
+        with open("/proc/stat") as f:
+            parts = f.readline().split()[1:]
+            vals = [int(v) for v in parts]
+            idle = vals[3] + (vals[4] if len(vals) > 4 else 0)
+            total = sum(vals)
+            cpu_pct = None
+            if _last_cpu_counters:
+                di = idle - _last_cpu_counters["idle"]
+                dt = total - _last_cpu_counters["total"]
+                if dt > 0:
+                    cpu_pct = round((1 - di / dt) * 100, 1)
+            _last_cpu_counters = {"idle": idle, "total": total}
+            result["cpu_percent"] = cpu_pct
+    except Exception:
+        result["cpu_percent"] = None
+
+    # Memory from /proc/meminfo
+    try:
+        with open("/proc/meminfo") as f:
+            info: dict = {}
+            for line in f:
+                p = line.split()
+                if len(p) >= 2:
+                    info[p[0].rstrip(":")] = int(p[1])
+            total_kb = info.get("MemTotal", 0)
+            avail_kb = info.get("MemAvailable", total_kb)
+            used_kb = total_kb - avail_kb
+            result["memory"] = {
+                "total_mb": total_kb // 1024,
+                "used_mb": used_kb // 1024,
+                "percent": round(used_kb / total_kb * 100, 1) if total_kb else 0,
+            }
+    except Exception:
+        result["memory"] = None
+
+    # Disk from df
+    try:
+        rc, out, _ = _run_command(["df", "/data"], timeout_seconds=2.0)
+        if rc == 0:
+            lines = out.strip().split("\n")
+            if len(lines) >= 2:
+                p = lines[-1].split()
+                t_kb, u_kb = int(p[1]), int(p[2])
+                result["disk"] = {
+                    "total_gb": round(t_kb / (1024 * 1024), 1),
+                    "used_gb": round(u_kb / (1024 * 1024), 1),
+                    "percent": round(u_kb / t_kb * 100, 1) if t_kb else 0,
+                }
+            else:
+                result["disk"] = None
+        else:
+            result["disk"] = None
+    except Exception:
+        result["disk"] = None
+
+    # Load average
+    try:
+        with open("/proc/loadavg") as f:
+            p = f.read().split()
+            result["load"] = [float(p[0]), float(p[1]), float(p[2])]
+    except Exception:
+        result["load"] = None
+
+    return result
+
+
 def _status_dashboard_html() -> str:
     return """<!doctype html>
 <html lang="en">
@@ -214,17 +298,12 @@ def _status_dashboard_html() -> str:
       font-family:'Outfit',sans-serif;
       background:#0a0a0f;
       background-image:radial-gradient(ellipse at 50% 0%,rgba(108,140,255,.03) 0%,transparent 60%);
-      color:#e4e4ef;
-      min-height:100vh;
+      color:#e4e4ef;min-height:100vh;
       -webkit-font-smoothing:antialiased;
     }
-    .c{
-      max-width:580px;margin:0 auto;padding:60px 24px 48px;
-      opacity:0;animation:up .5s ease-out forwards;
-    }
+    .c{max-width:600px;margin:0 auto;padding:60px 24px 48px;opacity:0;animation:up .5s ease-out forwards}
     @keyframes up{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
 
-    /* header */
     .hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:48px}
     .logo{font-size:13px;font-weight:500;letter-spacing:3px;text-transform:uppercase;color:#6c8cff}
     .ov{display:flex;align-items:center;gap:8px;font-size:12px;color:#8888a0}
@@ -233,42 +312,63 @@ def _status_dashboard_html() -> str:
     .od.degraded{background:#e09040;box-shadow:0 0 8px rgba(224,144,64,.5)}
     .od.down{background:#e05050;box-shadow:0 0 8px rgba(224,80,80,.5)}
 
-    /* uptime hero */
-    .ut{margin-bottom:56px}
+    .ut{margin-bottom:48px}
     .uv{font-size:52px;font-weight:300;letter-spacing:-2px;color:#fff;line-height:1;margin-bottom:8px;font-variant-numeric:tabular-nums}
     .ul{font-size:11px;color:#555566;letter-spacing:2px;text-transform:uppercase}
 
-    /* sections */
-    .s{margin-bottom:36px;opacity:0;animation:up .4s ease-out forwards}
-    .s:nth-child(3){animation-delay:.08s}
-    .s:nth-child(4){animation-delay:.14s}
-    .s:nth-child(5){animation-delay:.2s}
+    .s{margin-bottom:32px;opacity:0;animation:up .4s ease-out forwards}
+    .s:nth-child(3){animation-delay:.06s}
+    .s:nth-child(4){animation-delay:.10s}
+    .s:nth-child(5){animation-delay:.14s}
+    .s:nth-child(6){animation-delay:.18s}
+    .s:nth-child(7){animation-delay:.22s}
+    .s:nth-child(8){animation-delay:.26s}
     .sl{font-size:10px;font-weight:500;letter-spacing:2.5px;text-transform:uppercase;color:#444455;margin-bottom:14px}
 
+    /* resource bars */
+    .br{display:flex;align-items:center;gap:12px;padding:7px 0}
+    .br-l{font-size:11px;color:#555566;width:52px;text-transform:uppercase;letter-spacing:.8px;flex-shrink:0}
+    .br-t{flex:1;height:3px;background:rgba(255,255,255,.06);border-radius:2px;overflow:hidden}
+    .br-f{height:100%;border-radius:2px;transition:width .6s ease}
+    .br-v{font-size:13px;color:#b0b0c0;width:42px;text-align:right;font-variant-numeric:tabular-nums;flex-shrink:0}
+    .br-s{flex-shrink:0;display:flex;align-items:center}
+    .spark{display:block}
+    .load-row{display:flex;gap:16px;padding:7px 0}
+    .load-item{font-size:12px;color:#8888a0}
+    .load-item span{color:#555566;font-size:10px;margin-right:4px}
+
     /* service grid */
-    .sg{display:grid;grid-template-columns:1fr 1fr;gap:1px 24px}
-    .si{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+    .sg{display:grid;grid-template-columns:1fr 1fr;gap:0 24px}
+    .si{padding:8px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+    .si-top{display:flex;align-items:center;gap:10px}
     .d{width:6px;height:6px;border-radius:50%;flex-shrink:0;transition:background .3s,box-shadow .3s}
     .d.ok{background:#4caf80;box-shadow:0 0 6px rgba(76,175,128,.35)}
     .d.warn{background:#e09040;box-shadow:0 0 6px rgba(224,144,64,.35)}
     .d.bad{background:#e05050;box-shadow:0 0 6px rgba(224,80,80,.35)}
     .d.unk{background:#333344}
     .sn{font-size:13px;color:#b0b0c0}
+    .sd{font-size:11px;color:#3a3a4a;margin-left:16px;margin-top:2px}
 
     /* endpoints */
-    .ei{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+    .ei{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.04)}
     .eh{font-size:13px;color:#b0b0c0}
     .ee{margin-left:auto;font-size:11px;color:#e05050}
 
     /* providers */
     .pr{display:flex;flex-wrap:wrap;gap:6px}
     .pp{font-size:11px;padding:4px 12px;border-radius:100px;background:rgba(255,255,255,.04);color:#8888a0;letter-spacing:.3px}
+    .pp.default{border:1px solid rgba(108,140,255,.3);color:#6c8cff}
 
-    /* footer */
-    .ft{margin-top:48px;padding-top:20px;border-top:1px solid rgba(255,255,255,.04);display:flex;align-items:center;justify-content:space-between;font-size:11px;color:#444455}
+    /* config */
+    .kv{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+    .kv-k{font-size:12px;color:#555566}
+    .kv-v{font-size:12px;color:#b0b0c0;text-align:right}
+    .budget-bar{display:inline-block;width:60px;height:3px;background:rgba(255,255,255,.06);border-radius:2px;overflow:hidden;vertical-align:middle;margin-left:8px}
+    .budget-fill{height:100%;border-radius:2px}
+
+    .ft{margin-top:40px;padding-top:20px;border-top:1px solid rgba(255,255,255,.04);display:flex;align-items:center;justify-content:space-between;font-size:11px;color:#444455}
     .pd{display:inline-block;width:4px;height:4px;border-radius:50%;background:#4caf80;margin-right:6px;animation:pulse 2.5s ease-in-out infinite}
     @keyframes pulse{0%,100%{opacity:.9}50%{opacity:.2}}
-
     .err{text-align:center;padding:80px 0;color:#555566;font-size:14px}
   </style>
 </head>
@@ -276,6 +376,7 @@ def _status_dashboard_html() -> str:
   <div class="c" id="r"><div class="err">Loading&hellip;</div></div>
   <script>
     let bUp=0,lf=0,tt=null;
+
     function fmt(s){
       const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);
       if(d>0)return d+'d '+h+'h '+m+'m';
@@ -283,19 +384,56 @@ def _status_dashboard_html() -> str:
       return m+'m '+Math.floor(s%60)+'s';
     }
     function cur(){return bUp+Math.floor((Date.now()-lf)/1000)}
+
     function dc(ok,st){
       if(ok===true||st==='run')return 'ok';
       if(ok===false||st==='down'||st==='error')return 'bad';
       return 'unk';
     }
+
+    function barColor(pct){
+      if(pct>=85)return '#e05050';
+      if(pct>=65)return '#e09040';
+      return '#4caf80';
+    }
+
+    function spark(vals,w,h,color){
+      const v=vals.filter(x=>x!=null);
+      if(v.length<2)return '';
+      const mx=Math.max(...v),mn=Math.min(...v),rng=mx-mn||1;
+      const step=w/(v.length-1);
+      const pts=v.map((val,i)=>`${(i*step).toFixed(1)},${(h-((val-mn)/rng)*(h-2)-1).toFixed(1)}`).join(' ');
+      return `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.6"/></svg>`;
+    }
+
     function hl(d){
       const sv=(d.services||[]).every(s=>s.state==='run');
       const pb=(d.public_checks||[]).every(c=>c.ok);
       return sv&&pb?'ok':sv?'degraded':'down';
     }
+
+    function bar(label,pct,history,key){
+      const p=pct!=null?pct:0;
+      const col=barColor(p);
+      const hist=(history||[]).map(e=>e[key]);
+      return `<div class="br">
+        <span class="br-l">${label}</span>
+        <div class="br-t"><div class="br-f" style="width:${p}%;background:${col}"></div></div>
+        <span class="br-v">${pct!=null?p+'%':'--'}</span>
+        <span class="br-s">${spark(hist,72,18,col)}</span>
+      </div>`;
+    }
+
     function render(d){
       const h=d.health||{},st=hl(d),cc=d.connected_clients||0;
+      const sys=d.system||{},cfg=d.config||{},info=d.service_info||{};
+      const hist=d.metrics_history||[];
       const lb=st==='ok'?'All systems operational':st==='degraded'?'Partial degradation':'Systems down';
+      const mem=sys.memory||{},disk=sys.disk||{},load=sys.load||[];
+      const opusPct=cfg.opus_budget?Math.min(100,Math.round((cfg.opus_used||0)/cfg.opus_budget*100)):0;
+      const opusCol=opusPct>=90?'#e05050':opusPct>=70?'#e09040':'#4caf80';
+      const chain=(cfg.fallback_chain||[]).join(' \\u2192 ');
+
       document.getElementById('r').innerHTML=`
         <div class="hd">
           <div class="logo">Conduit</div>
@@ -306,9 +444,25 @@ def _status_dashboard_html() -> str:
           <div class="ul">uptime</div>
         </div>
         <div class="s">
+          <div class="sl">System</div>
+          ${bar('CPU',sys.cpu_percent,hist,'cpu')}
+          ${bar('Memory',mem.percent,hist,'mem')}
+          ${bar('Disk',disk.percent,hist,'disk')}
+          ${load.length?`<div class="load-row">
+            <div class="load-item"><span>1m</span>${load[0]}</div>
+            <div class="load-item"><span>5m</span>${load[1]}</div>
+            <div class="load-item"><span>15m</span>${load[2]}</div>
+            ${mem.total_mb?`<div class="load-item" style="margin-left:auto"><span>RAM</span>${mem.used_mb}/${mem.total_mb} MB</div>`:''}
+          </div>`:''}
+        </div>
+        <div class="s">
           <div class="sl">Services</div>
           <div class="sg">
-            ${(d.services||[]).map(s=>`<div class="si"><span class="d ${dc(null,s.state)}"></span><span class="sn">${s.service.replace('conduit-','')}</span></div>`).join('')}
+            ${(d.services||[]).map(s=>{
+              const name=s.service.replace('conduit-','');
+              const desc=info[s.service]||'';
+              return `<div class="si"><div class="si-top"><span class="d ${dc(null,s.state)}"></span><span class="sn">${name}</span></div>${desc?`<div class="sd">${desc}</div>`:''}</div>`;
+            }).join('')}
           </div>
         </div>
         <div class="s">
@@ -318,15 +472,25 @@ def _status_dashboard_html() -> str:
         <div class="s">
           <div class="sl">Providers</div>
           <div class="pr">
-            ${(h.providers||[]).map(p=>`<span class="pp">${p}</span>`).join('')}
+            ${(h.providers||[]).map(p=>`<span class="pp${p===cfg.default_provider?' default':''}">${p}</span>`).join('')}
           </div>
+        </div>
+        <div class="s">
+          <div class="sl">Configuration</div>
+          <div class="kv"><span class="kv-k">Default provider</span><span class="kv-v">${cfg.default_provider||'--'}</span></div>
+          <div class="kv"><span class="kv-k">Fallback chain</span><span class="kv-v">${chain||'--'}</span></div>
+          <div class="kv"><span class="kv-k">Opus budget</span><span class="kv-v">${((cfg.opus_used||0)/1000).toFixed(1)}k / ${((cfg.opus_budget||0)/1000).toFixed(0)}k tokens<span class="budget-bar"><span class="budget-fill" style="width:${opusPct}%;background:${opusCol}"></span></span></span></div>
+          <div class="kv"><span class="kv-k">Scheduled tasks</span><span class="kv-v">${cfg.scheduled_tasks||0} active</span></div>
+          <div class="kv"><span class="kv-k">Worker</span><span class="kv-v">${h.worker_phase||'IDLE'}</span></div>
         </div>
         <div class="ft">
           <span><span class="pd"></span>Refreshing every 30s</span>
           <span>${cc} client${cc!==1?'s':''}</span>
         </div>`;
     }
+
     function tick(){const e=document.getElementById('tk');if(e)e.textContent=fmt(cur())}
+
     async function refresh(){
       try{
         const r=await fetch('/api/server-dashboard',{cache:'no-store'});
@@ -1368,6 +1532,23 @@ async def api_server_dashboard():
     local_checks = await asyncio.to_thread(_collect_local_checks)
     public_checks = await asyncio.to_thread(_collect_public_checks)
     tunnel = await asyncio.to_thread(_collect_tunnel_summary)
+    system = await asyncio.to_thread(_collect_system_resources)
+
+    # Append to metrics history
+    entry = {
+        "ts": int(time.time()),
+        "cpu": system.get("cpu_percent"),
+        "mem": system.get("memory", {}).get("percent") if system.get("memory") else None,
+        "disk": system.get("disk", {}).get("percent") if system.get("disk") else None,
+    }
+    _metrics_history.append(entry)
+    if len(_metrics_history) > 120:
+        _metrics_history[:] = _metrics_history[-120:]
+
+    # Config summary
+    opus_used = await db.get_daily_opus_tokens()
+    scheduled = await db.get_scheduled_tasks()
+
     return {
         "ok": True,
         "generated_at": datetime.now().isoformat(),
@@ -1377,6 +1558,16 @@ async def api_server_dashboard():
         "public_checks": public_checks,
         "tunnel": tunnel,
         "connected_clients": len(manager.active),
+        "system": system,
+        "metrics_history": _metrics_history[-60:],
+        "service_info": SERVICE_DESCRIPTIONS,
+        "config": {
+            "default_provider": config.DEFAULT_PROVIDER,
+            "fallback_chain": config.FALLBACK_CHAIN,
+            "opus_budget": config.OPUS_DAILY_BUDGET,
+            "opus_used": opus_used,
+            "scheduled_tasks": len([t for t in scheduled if t.get("enabled", True)]),
+        },
     }
 
 
