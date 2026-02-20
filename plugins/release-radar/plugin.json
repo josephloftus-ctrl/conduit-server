@@ -1,0 +1,6 @@
+{
+  "id": "release-radar",
+  "name": "Release Radar",
+  "description": "Auto-download new digital movie releases via TMDB + Jackett + qBittorrent.",
+  "version": "1.0.0"
+}
