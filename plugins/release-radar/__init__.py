@@ -144,13 +144,11 @@ def _get_db() -> _RadarDB:
 # ---------------------------------------------------------------------------
 async def _tmdb_get(endpoint: str, params: dict | None = None) -> dict:
     """Make an authenticated TMDB API request."""
-    headers = {
-        "Authorization": f"Bearer {_TMDB_API_KEY}",
-        "Accept": "application/json",
-    }
     url = f"{_TMDB_BASE}{endpoint}"
+    p = dict(params or {})
+    p["api_key"] = _TMDB_API_KEY
     async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(url, headers=headers, params=params or {})
+        resp = await client.get(url, params=p)
         resp.raise_for_status()
         return resp.json()
 
