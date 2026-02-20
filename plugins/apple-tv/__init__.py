@@ -141,40 +141,40 @@ async def _heartbeat_tick(**kwargs):
     if _idle_nudge_sent_date and _idle_nudge_sent_date != today:
         _idle_nudge_sent_date = ""
 
-    # Poll power state
-    power_raw = await _run_atvremote("power_state")
-    if power_raw.startswith("Error"):
-        log.debug("Apple TV heartbeat: %s", power_raw)
+    # Poll device state + app to determine if TV is on.
+    # NOTE: power_state is broken on tvOS 18.x (FetchAttentionState removed).
+    # Instead we use device_state + app as a proxy: if we get a valid response,
+    # the TV is on. If we get an error/timeout, it's off or unreachable.
+    device_state_raw = await _run_atvremote("device_state")
+    if device_state_raw.startswith("Error"):
+        # Could be off (unreachable) or actually unreachable
+        log.debug("Apple TV heartbeat: %s", device_state_raw)
         _tv_state = {
-            "power": "unreachable",
+            "power": "off",
             "updated_at": now.isoformat(),
         }
-        return {"status": "unreachable", "error": power_raw}
+        return {"status": "off_or_unreachable", "error": device_state_raw}
 
-    power = power_raw.strip().lower()
-    is_on = power == "on"
+    # Got a response — TV is on
+    is_on = True
+    device_state = device_state_raw.strip()
 
     state: dict = {
-        "power": "on" if is_on else "off",
+        "power": "on",
+        "device_state": device_state,
         "updated_at": now.isoformat(),
     }
 
-    # If on, grab playback info
-    if is_on:
-        app_raw = await _run_atvremote("app")
-        title_raw = await _run_atvremote("playing")
+    # Grab playback info and current app
+    app_raw = await _run_atvremote("app")
+    title_raw = await _run_atvremote("playing")
 
-        state["app"] = app_raw if not app_raw.startswith("Error") else None
-        state["playing_raw"] = title_raw if not title_raw.startswith("Error") else None
+    state["app"] = app_raw if not app_raw.startswith("Error") else None
+    state["playing_raw"] = title_raw if not title_raw.startswith("Error") else None
 
-        # Parse playing output for title/position
-        if state.get("playing_raw"):
-            state.update(_parse_playing(state["playing_raw"]))
-
-        device_state_raw = await _run_atvremote("device_state")
-        state["device_state"] = (
-            device_state_raw if not device_state_raw.startswith("Error") else None
-        )
+    # Parse playing output for title/position
+    if state.get("playing_raw"):
+        state.update(_parse_playing(state["playing_raw"]))
 
     _tv_state = state
 
