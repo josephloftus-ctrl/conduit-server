@@ -137,7 +137,11 @@ def get_status_context() -> str:
 
 
 async def run_cycle(manager) -> None:
-    """Main entry — called by scheduler. Loads state, runs one step, saves."""
+    """Main entry — called by scheduler.
+
+    Loops through state transitions until hitting a waiting state or error,
+    so a single cron tick can go from IDLE all the way to PROPOSING.
+    """
     state = _load_state()
     phase = state.get("phase", IDLE)
     log.info("Worker cycle starting — phase: %s", phase)
@@ -176,20 +180,38 @@ async def run_cycle(manager) -> None:
         BUILDING: _build,
     }
 
-    handler = dispatch.get(phase)
-    if handler:
+    max_steps = len(dispatch)  # safety cap to prevent infinite loops
+    for step in range(max_steps):
+        phase = state.get("phase", IDLE)
+        handler = dispatch.get(phase)
+        if not handler:
+            log.warning("Worker in unhandled phase: %s", phase)
+            break
+
         try:
+            log.info("Worker step %d: running %s", step + 1, phase)
             state = await handler(state, manager)
             _save_state(state)
 
-            # Send notifications on entry to waiting states
             new_phase = state.get("phase")
+
+            # Send notifications on entry to waiting states
             if new_phase == PROPOSING:
                 await _propose(state, manager)
+
+            # Stop if we've reached a waiting state
+            if new_phase in _WAITING_STATES:
+                log.info("Worker reached waiting state: %s", new_phase)
+                break
+
+            # Stop if phase didn't change (shouldn't happen, but safety)
+            if new_phase == phase:
+                log.warning("Worker phase unchanged at %s, stopping", phase)
+                break
+
         except Exception as e:
             log.error("Worker cycle failed in %s: %s", phase, e, exc_info=True)
-    else:
-        log.warning("Worker in unhandled phase: %s", phase)
+            break
 
 
 async def handle_boss_response(text: str) -> str | None:
