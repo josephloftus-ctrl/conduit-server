@@ -1,0 +1,6 @@
+{
+  "id": "apple-tv",
+  "name": "Apple TV Remote",
+  "description": "Control Apple TV and monitor power/playback state via heartbeats.",
+  "version": "1.0.0"
+}
