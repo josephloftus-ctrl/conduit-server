@@ -1,0 +1,6 @@
+{
+  "id": "hunter",
+  "name": "Hunter",
+  "description": "Search and download torrents via Jackett and qBittorrent.",
+  "version": "1.0.0"
+}
