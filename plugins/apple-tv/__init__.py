@@ -22,15 +22,16 @@ log = logging.getLogger("conduit.plugin.apple_tv")
 _DEVICE_NAME = "Living Room"
 _ATVREMOTE_PATH = "atvremote"
 _TIMEOUT_SECONDS = 15
-_AUTO_OFF_HOUR = 23  # 11pm
-_IDLE_TIMEOUT_MINUTES = 120
-_AUTO_OFF_ENABLED = True
+_WEEKDAY_BEDTIME = 23   # 11pm Sun-Thu nights
+_WEEKEND_BEDTIME = 1    # 1am Fri-Sat nights (Sat/Sun morning)
+_AUTO_OFF_ENABLED = False
 
 # ---------------------------------------------------------------------------
 # Module-level state
 # ---------------------------------------------------------------------------
 _tv_state: dict = {}
-_idle_nudge_sent_date: str = ""
+_idle_since: datetime | None = None    # When TV first became idle (None = not idle)
+_last_nudge_level: int = 0             # 0=none, 1=nudged, 2=warned, 3=auto-off
 
 # ---------------------------------------------------------------------------
 # Action whitelist
@@ -129,17 +130,54 @@ async def _apple_tv(action: str, value: str | None = None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Heartbeat tick — polls state, auto-off, idle detection
+# Sleep logic helpers
+# ---------------------------------------------------------------------------
+def _is_past_bedtime(now: datetime) -> bool:
+    """Check if current time is past the applicable bedtime."""
+    hour = now.hour
+    # Early morning (midnight-4am) counts as previous night
+    if hour < 4:
+        weekday = (now.weekday() - 1) % 7  # yesterday's weekday
+    else:
+        weekday = now.weekday()
+
+    # Friday (4) and Saturday (5) nights use weekend bedtime
+    if weekday in (4, 5):
+        bedtime = _WEEKEND_BEDTIME
+    else:
+        bedtime = _WEEKDAY_BEDTIME
+
+    # For bedtimes past midnight (e.g. 1am), the hour wraps
+    if bedtime <= 4:
+        # Late-night bedtime: past bedtime if hour >= bedtime and hour < 4,
+        # OR if hour >= some evening hour (but that's handled by weekday bedtime)
+        # Actually: past bedtime once we're in the early morning window past the hour
+        return hour >= bedtime and hour < 4
+    else:
+        # Normal evening bedtime: past if hour >= bedtime or in early morning
+        return hour >= bedtime or hour < 4
+
+
+def _classify_activity(state: dict) -> str:
+    """Classify TV activity as 'active', 'paused', or 'idle'."""
+    device_state = state.get("device_state", "")
+    title = state.get("title")
+    ds_lower = device_state.lower() if device_state else ""
+
+    if "playing" in ds_lower or "loading" in ds_lower:
+        return "active"
+    if "paused" in ds_lower and title:
+        return "paused"
+    return "idle"
+
+
+# ---------------------------------------------------------------------------
+# Heartbeat tick — polls state, smart sleep logic
 # ---------------------------------------------------------------------------
 async def _heartbeat_tick(**kwargs):
-    global _tv_state, _idle_nudge_sent_date
+    global _tv_state, _idle_since, _last_nudge_level
 
     now = datetime.now()
-    today = now.strftime("%Y-%m-%d")
-
-    # Reset idle nudge tracking on new day
-    if _idle_nudge_sent_date and _idle_nudge_sent_date != today:
-        _idle_nudge_sent_date = ""
 
     # Poll device state + app to determine if TV is on.
     # NOTE: power_state is broken on tvOS 18.x (FetchAttentionState removed).
@@ -147,16 +185,17 @@ async def _heartbeat_tick(**kwargs):
     # the TV is on. If we get an error/timeout, it's off or unreachable.
     device_state_raw = await _run_atvremote("device_state")
     if device_state_raw.startswith("Error"):
-        # Could be off (unreachable) or actually unreachable
         log.debug("Apple TV heartbeat: %s", device_state_raw)
         _tv_state = {
             "power": "off",
             "updated_at": now.isoformat(),
         }
+        # TV is off — reset idle tracking
+        _idle_since = None
+        _last_nudge_level = 0
         return {"status": "off_or_unreachable", "error": device_state_raw}
 
     # Got a response — TV is on
-    is_on = True
     device_state = device_state_raw.strip()
 
     state: dict = {
@@ -178,54 +217,92 @@ async def _heartbeat_tick(**kwargs):
 
     _tv_state = state
 
-    # Auto-off: TV on past bedtime
-    if _AUTO_OFF_ENABLED and is_on and now.hour >= _AUTO_OFF_HOUR:
-        log.info("Auto-off: turning off Apple TV (hour=%d, threshold=%d)", now.hour, _AUTO_OFF_HOUR)
+    if not _AUTO_OFF_ENABLED:
+        return {"status": "ok", "power": "on"}
+
+    # Classify activity
+    activity = _classify_activity(state)
+    log.debug("Apple TV activity: %s (device_state=%s, title=%s)",
+              activity, device_state, state.get("title"))
+
+    if activity == "active":
+        # Never interrupt active playback — clear idle tracking
+        _idle_since = None
+        _last_nudge_level = 0
+        return {"status": "ok", "power": "on", "activity": "active"}
+
+    # Paused or idle — start or continue idle tracking
+    if _idle_since is None:
+        _idle_since = now
+        _last_nudge_level = 0
+
+    idle_minutes = (now - _idle_since).total_seconds() / 60
+    past_bedtime = _is_past_bedtime(now)
+    bedtime_note = " (past bedtime)" if past_bedtime else ""
+
+    # Thresholds in minutes
+    if past_bedtime:
+        nudge_at, warn_at, off_at = 15, 15, 30
+    else:
+        nudge_at, warn_at, off_at = 45, 75, 90
+
+    idle_display = int(idle_minutes)
+
+    # Auto-off
+    if idle_minutes >= off_at and _last_nudge_level < 3:
+        log.info("Auto-off: Apple TV idle for %d min%s", idle_display, bedtime_note)
         result = await _run_atvremote("turn_off")
         _tv_state["power"] = "off"
         _tv_state["auto_off"] = True
+        _last_nudge_level = 3
 
         try:
             from server import ntfy
             await ntfy.push(
                 title="Apple TV Auto-Off",
-                body=f"Turned off {_DEVICE_NAME} Apple TV (bedtime auto-off, {now.strftime('%I:%M %p')}).",
+                body=f"Turned off {_DEVICE_NAME} Apple TV (idle for {idle_display} min{bedtime_note}, {now.strftime('%I:%M %p')}).",
                 tags=["tv", "zzz"],
                 priority=2,
             )
         except Exception as e:
             log.debug("ntfy push failed: %s", e)
 
+        _idle_since = None
         return {"status": "auto_off", "result": result}
 
-    # Idle detection: on home screen with no media for too long
-    if is_on and _idle_nudge_sent_date != today:
-        device_st = state.get("device_state", "")
-        title = state.get("title")
-        # "idle" or on home screen with no active playback
-        is_idle = (
-            device_st and "idle" in device_st.lower()
-        ) or (not title and device_st and "playing" not in device_st.lower())
+    # Warn
+    if idle_minutes >= warn_at and _last_nudge_level < 2:
+        log.info("Apple TV idle warn: %d min%s", idle_display, bedtime_note)
+        _last_nudge_level = 2
 
-        if is_idle:
-            # Check how long we've been idle by comparing with previous state
-            prev_power = kwargs.get("sent_today", {}).get("_date", "")
-            # Simple approach: if TV is idle right now, send a nudge once per day
-            log.info("Apple TV idle on home screen — sending nudge")
-            _idle_nudge_sent_date = today
+        try:
+            from server import ntfy
+            await ntfy.push(
+                title="Apple TV Idle Warning",
+                body=f"{_DEVICE_NAME} Apple TV idle for {idle_display} min{bedtime_note} — turning off soon.",
+                tags=["tv", "warning"],
+                priority=3,
+            )
+        except Exception as e:
+            log.debug("ntfy push failed: %s", e)
 
-            try:
-                from server import ntfy
-                await ntfy.push(
-                    title="Apple TV Idle",
-                    body=f"{_DEVICE_NAME} Apple TV has been on the home screen with nothing playing. Want to turn it off?",
-                    tags=["tv", "eyes"],
-                    priority=2,
-                )
-            except Exception as e:
-                log.debug("ntfy push failed: %s", e)
+    # Nudge
+    elif idle_minutes >= nudge_at and _last_nudge_level < 1:
+        log.info("Apple TV idle nudge: %d min%s", idle_display, bedtime_note)
+        _last_nudge_level = 1
 
-    return {"status": "ok", "power": state["power"]}
+        try:
+            from server import ntfy
+            await ntfy.push(
+                title="Apple TV Idle",
+                body=f"{_DEVICE_NAME} Apple TV has been idle for {idle_display} min{bedtime_note}. Still watching?",
+                tags=["tv", "eyes"],
+                priority=2,
+            )
+        except Exception as e:
+            log.debug("ntfy push failed: %s", e)
+
+    return {"status": "ok", "power": "on", "activity": activity, "idle_minutes": idle_display}
 
 
 def _parse_playing(raw: str) -> dict:
@@ -331,14 +408,14 @@ def _time_to_seconds(time_str: str) -> float:
 # ---------------------------------------------------------------------------
 def register(api: PluginAPI):
     global _DEVICE_NAME, _ATVREMOTE_PATH, _TIMEOUT_SECONDS
-    global _AUTO_OFF_HOUR, _IDLE_TIMEOUT_MINUTES, _AUTO_OFF_ENABLED
+    global _WEEKDAY_BEDTIME, _WEEKEND_BEDTIME, _AUTO_OFF_ENABLED
 
     # Apply config overrides if provided
     _DEVICE_NAME = api.config.get("device_name", _DEVICE_NAME)
     _ATVREMOTE_PATH = api.config.get("atvremote_path", _ATVREMOTE_PATH)
     _TIMEOUT_SECONDS = int(api.config.get("timeout_seconds", _TIMEOUT_SECONDS))
-    _AUTO_OFF_HOUR = int(api.config.get("auto_off_hour", _AUTO_OFF_HOUR))
-    _IDLE_TIMEOUT_MINUTES = int(api.config.get("idle_timeout_minutes", _IDLE_TIMEOUT_MINUTES))
+    _WEEKDAY_BEDTIME = int(api.config.get("weekday_bedtime", _WEEKDAY_BEDTIME))
+    _WEEKEND_BEDTIME = int(api.config.get("weekend_bedtime", _WEEKEND_BEDTIME))
     _AUTO_OFF_ENABLED = api.config.get("auto_off_enabled", _AUTO_OFF_ENABLED)
 
     api.register_tool(
