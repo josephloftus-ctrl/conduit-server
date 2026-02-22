@@ -1,0 +1,6 @@
+{
+  "id": "jellyfin-recs",
+  "name": "Jellyfin Recommendations",
+  "description": "AI-powered movie and TV recommendations from Jellyfin watch history.",
+  "version": "1.0.0"
+}
