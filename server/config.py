@@ -101,6 +101,7 @@ MARKDOWN_SKILLS_MAX_PER_TURN = md_skills_cfg.get("max_per_turn", 2)
 plugins_cfg = _raw.get("plugins", {})
 PLUGINS_ENABLED = plugins_cfg.get("enabled", True)
 PLUGINS_DIR = plugins_cfg.get("dir", "~/.conduit/plugins")
+PLUGIN_CONFIGS = plugins_cfg.get("configs", {})
 
 # Subagents
 subagents_cfg = agents_cfg.get("subagents", {})
@@ -208,7 +209,7 @@ def reload():
     global AGENTS_LIST, AGENTS_COMMS, BINDINGS_LIST
     global SKILL_GROCERY_ENABLED, SKILL_EXPENSES_ENABLED, SKILL_CALENDAR_ENABLED
     global MARKDOWN_SKILLS_ENABLED, MARKDOWN_SKILLS_DIR, MARKDOWN_SKILLS_MAX_PER_TURN
-    global PLUGINS_ENABLED, PLUGINS_DIR
+    global PLUGINS_ENABLED, PLUGINS_DIR, PLUGIN_CONFIGS
     global SUBAGENTS_ENABLED, SUBAGENTS_MAX_SPAWN_DEPTH, SUBAGENTS_MAX_CHILDREN
     global SUBAGENTS_DEFAULT_TIMEOUT, SUBAGENTS_SESSION_TTL_MINUTES
     global NTFY_SERVER, NTFY_TOPIC, NTFY_TOKEN, NTFY_ENABLED
@@ -303,6 +304,7 @@ def reload():
     plg = _raw.get("plugins", {})
     PLUGINS_ENABLED = plg.get("enabled", True)
     PLUGINS_DIR = plg.get("dir", "~/.conduit/plugins")
+    PLUGIN_CONFIGS = plg.get("configs", {})
 
     sub = ag.get("subagents", {})
     SUBAGENTS_ENABLED = sub.get("enabled", True)

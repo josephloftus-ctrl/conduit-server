@@ -837,7 +837,9 @@ async def lifespan(app: FastAPI):
             from .tools import register as register_tool
             from .skills import _skills
 
-            plugin_tools, plugin_skills = load_all_plugins(config.PLUGINS_DIR)
+            plugin_tools, plugin_skills = load_all_plugins(
+                config.PLUGINS_DIR, plugin_configs=config.PLUGIN_CONFIGS
+            )
             for tool in plugin_tools:
                 register_tool(tool)
             # Merge plugin-registered skills into the skills store
@@ -1975,6 +1977,18 @@ async def api_delete_memory(memory_id: str):
     from . import vectorstore
     await vectorstore.delete(memory_id)
     return {"ok": True}
+
+
+@app.get("/api/jellyfin-recs")
+async def get_jellyfin_recs(userId: str = ""):
+    """Return cached AI recommendations for a Jellyfin user."""
+    recs_mod = sys.modules.get("_conduit_plugin_jellyfin_recs")
+    if not recs_mod or not hasattr(recs_mod, "get_cached_recs"):
+        return {"rows": [], "generated_at": None, "error": "jellyfin-recs plugin not loaded"}
+    recs = recs_mod.get_cached_recs(userId)
+    if recs is None:
+        return {"rows": [], "generated_at": None, "stale": True}
+    return recs
 
 
 @app.post("/api/settings/test-ntfy")

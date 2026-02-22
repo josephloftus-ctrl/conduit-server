@@ -213,6 +213,14 @@ markdown_skills:
 plugins:
   enabled: true
   dir: plugins
+  configs:
+    jellyfin-recs:
+      jellyfin_url: "http://localhost:8096"
+      api_key_env: "JELLYFIN_API_KEY"
+      jellyfin_user_id: ""
+      refresh_hour: 18
+      row_count: 6
+      provider: "chatgpt"
 ntfy:
   server_env: NTFY_SERVER
   topic_env: NTFY_TOPIC
@@ -263,7 +271,7 @@ outlook:
 worker:
   enabled: true
   reddit_username: kitchenjesus
-  cycle_cron: "0 10,20 * * *"
+  cycle_cron: "0 * * * *"
   digest_cron: "0 5 * * *"
   data_dir: ~/conduit/server/data/worker
   ideation_provider: minimax

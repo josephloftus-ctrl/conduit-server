@@ -173,8 +173,8 @@ def load_plugin(
         # Clean up sys.path
         if path_added and parent_dir in sys.path:
             sys.path.remove(parent_dir)
-        # Clean up module from sys.modules to allow re-loading
-        sys.modules.pop(module_name, None)
+        # Keep plugin module in sys.modules so REST endpoints can access
+        # exported functions (e.g. jellyfin-recs get_cached_recs)
 
 
 # ---------------------------------------------------------------------------
