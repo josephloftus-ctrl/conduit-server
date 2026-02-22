@@ -2,8 +2,8 @@
 
 Checks TMDB for movies that recently became available for digital
 rental/purchase, filters out titles on the user's streaming services
-(Disney+, Netflix, Hulu), then searches Jackett and downloads the best
-match via qBittorrent.
+(Disney+, Netflix, Hulu), then adds them to Radarr for automatic
+download and import.
 
 Tools:
 - release_radar_check: Manually trigger a release check
@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -34,18 +33,15 @@ log = logging.getLogger("conduit.plugin.release-radar")
 _TMDB_API_KEY = ""
 _TMDB_BASE = "https://api.themoviedb.org/3"
 
-_JACKETT_URL = "http://localhost:9117"
-_JACKETT_API_KEY = ""
-_QBIT_URL = "http://localhost:8080"
-_QBIT_USER = "admin"
-_QBIT_PASS = "adminadmin"
+_RADARR_URL = "http://localhost:7878"
+_RADARR_API_KEY = ""
 
 _MIN_RATING = 6.5
 _MIN_POPULARITY = 50.0
-_MIN_SEEDERS = 5
 _LOOKBACK_DAYS = 30
 _CHECK_HOUR = 10  # Run daily check at this hour (local time)
 _DATA_DIR = "~/.config/release-radar"
+_ROOT_FOLDER = "/data/Movies"
 
 # TMDB watch provider IDs for user's existing services
 _EXCLUDED_PROVIDERS = {
@@ -54,33 +50,11 @@ _EXCLUDED_PROVIDERS = {
     15,   # Hulu
 }
 
-_TORZNAB_NS = "http://torznab.com/schemas/2015/feed"
-
 # ---------------------------------------------------------------------------
 # Module-level state
 # ---------------------------------------------------------------------------
-_qbit_sid: str | None = None
 _db: _RadarDB | None = None
 _last_check_date: str | None = None
-
-# ---------------------------------------------------------------------------
-# Quality scoring regex patterns
-# ---------------------------------------------------------------------------
-_QUALITY_PATTERNS = [
-    (re.compile(r"2160p|4K|UHD", re.I), 4),
-    (re.compile(r"1080p", re.I), 3),
-    (re.compile(r"720p", re.I), 1),
-    (re.compile(r"REMUX", re.I), 3),
-    (re.compile(r"HDR|HDR10|HDR10\+|Dolby\.?Vision|DV\b", re.I), 2),
-    (re.compile(r"x265|HEVC|H\.?265", re.I), 1),
-    (re.compile(r"BluRay|Blu-Ray", re.I), 1),
-]
-
-# Negative patterns — avoid cams, screeners, etc.
-_BAD_PATTERNS = [
-    re.compile(r"CAM|HDCAM|TS|TELESYNC|TC|TELECINE|SCR|SCREENER|DVDSCR", re.I),
-    re.compile(r"HDTS|HDTC|WEB-?Scr", re.I),
-]
 
 
 # ---------------------------------------------------------------------------
@@ -99,10 +73,16 @@ class _RadarDB:
                 rating REAL,
                 info_hash TEXT,
                 torrent_name TEXT,
+                radarr_id INTEGER,
                 grabbed_at TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'grabbed'
             )"""
         )
+        # Add radarr_id column if upgrading from old schema
+        try:
+            self._conn.execute("ALTER TABLE releases ADD COLUMN radarr_id INTEGER")
+        except sqlite3.OperationalError:
+            pass
         self._conn.commit()
 
     def has_movie(self, tmdb_id: int) -> bool:
@@ -112,12 +92,13 @@ class _RadarDB:
         return row is not None
 
     def add(self, tmdb_id: int, title: str, year: int | None,
-            rating: float, info_hash: str | None, torrent_name: str) -> None:
+            rating: float, radarr_id: int | None = None) -> None:
         self._conn.execute(
             """INSERT OR IGNORE INTO releases
-               (tmdb_id, title, year, rating, info_hash, torrent_name, grabbed_at)
+               (tmdb_id, title, year, rating, radarr_id, torrent_name, grabbed_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (tmdb_id, title, year, rating, info_hash, torrent_name,
+            (tmdb_id, title, year, rating, radarr_id,
+             f"Added to Radarr (auto)",
              datetime.now(timezone.utc).isoformat()),
         )
         self._conn.commit()
@@ -143,7 +124,6 @@ def _get_db() -> _RadarDB:
 # TMDB API
 # ---------------------------------------------------------------------------
 async def _tmdb_get(endpoint: str, params: dict | None = None) -> dict:
-    """Make an authenticated TMDB API request."""
     url = f"{_TMDB_BASE}{endpoint}"
     p = dict(params or {})
     p["api_key"] = _TMDB_API_KEY
@@ -172,183 +152,84 @@ async def _discover_new_digital_releases() -> list[dict]:
 
     data = await _tmdb_get("/discover/movie", params)
     movies = data.get("results", [])
-
-    # Filter by popularity threshold
     movies = [m for m in movies if m.get("popularity", 0) >= _MIN_POPULARITY]
-
     return movies
 
 
 async def _get_watch_providers(tmdb_id: int) -> dict:
-    """Get watch providers for a movie in the US."""
     data = await _tmdb_get(f"/movie/{tmdb_id}/watch/providers")
     return data.get("results", {}).get("US", {})
 
 
 async def _is_on_excluded_service(tmdb_id: int) -> bool:
-    """Check if a movie is available on one of the user's streaming services."""
     providers = await _get_watch_providers(tmdb_id)
-
-    # Check flatrate (subscription streaming) providers
     flatrate = providers.get("flatrate", [])
     for p in flatrate:
         if p.get("provider_id") in _EXCLUDED_PROVIDERS:
             return True
-
     return False
 
 
 # ---------------------------------------------------------------------------
-# Jackett / Torznab (reuses pattern from hunter plugin)
+# Radarr API
 # ---------------------------------------------------------------------------
-def _parse_torznab(xml_text: str) -> list[dict]:
-    root = ElementTree.fromstring(xml_text)
-    channel = root.find("channel")
-    if channel is None:
-        return []
-
-    results = []
-    for item in channel.findall("item"):
-        title = item.findtext("title", "")
-        link = item.findtext("link", "")
-        size_text = item.findtext("size", "0")
-        source = item.findtext("jackettindexer", "unknown")
-
-        seeders = 0
-        info_hash = None
-        magnet = None
-
-        for attr in item.findall(f"{{{_TORZNAB_NS}}}attr"):
-            name = attr.get("name", "")
-            value = attr.get("value", "")
-            if name == "seeders":
-                seeders = int(value)
-            elif name == "infohash":
-                info_hash = value
-            elif name == "magneturl":
-                magnet = value
-
-        if not magnet and link.startswith("magnet:"):
-            magnet = link
-
-        if not info_hash and magnet:
-            m = re.search(r"btih:([a-fA-F0-9]{40})", magnet)
-            if m:
-                info_hash = m.group(1)
-
-        results.append({
-            "title": title,
-            "magnet": magnet,
-            "link": link,
-            "size": int(size_text) if size_text.isdigit() else 0,
-            "seeders": seeders,
-            "info_hash": info_hash,
-            "source": source,
-        })
-
-    return results
-
-
-def _score_result(title: str) -> int:
-    """Score a torrent result by quality indicators."""
-    # Reject bad quality
-    for pat in _BAD_PATTERNS:
-        if pat.search(title):
-            return -100
-
-    score = 0
-    for pat, points in _QUALITY_PATTERNS:
-        if pat.search(title):
-            score += points
-    return score
-
-
-async def _search_jackett(query: str) -> list[dict]:
-    """Search Jackett for a movie, return results sorted by quality + seeders."""
-    if not _JACKETT_API_KEY:
-        return []
-
-    params = {
-        "apikey": _JACKETT_API_KEY,
-        "t": "search",
-        "q": query,
-        "cat": "2000",  # Movies
-    }
-    url = f"{_JACKETT_URL}/api/v2.0/indexers/all/results/torznab/api"
-
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(url, params=params)
-        resp.raise_for_status()
-
-    results = _parse_torznab(resp.text)
-
-    # Filter: need magnet, min seeders, no bad quality
-    results = [
-        r for r in results
-        if r.get("magnet")
-        and r["seeders"] >= _MIN_SEEDERS
-        and _score_result(r["title"]) >= 0
-    ]
-
-    # Sort by quality score (desc), then seeders (desc)
-    results.sort(key=lambda r: (_score_result(r["title"]), r["seeders"]), reverse=True)
-
-    return results
-
-
-# ---------------------------------------------------------------------------
-# qBittorrent API (reuses pattern from hunter plugin)
-# ---------------------------------------------------------------------------
-async def _qbit_login(client: httpx.AsyncClient) -> str | None:
-    global _qbit_sid
-    resp = await client.post(
-        f"{_QBIT_URL}/api/v2/auth/login",
-        data={"username": _QBIT_USER, "password": _QBIT_PASS},
-        headers={"Referer": _QBIT_URL},
-    )
-    if resp.text.strip() == "Ok.":
-        sid = resp.cookies.get("SID")
-        if sid:
-            _qbit_sid = sid
-            return sid
-    return None
-
-
-async def _qbit_add(magnet: str, category: str = "movies") -> bool:
-    global _qbit_sid
-    url = f"{_QBIT_URL}/api/v2/torrents/add"
-    headers = {"Referer": _QBIT_URL}
-    data = {"urls": magnet, "category": category}
-
+async def _radarr_get(endpoint: str, params: dict | None = None) -> dict | list:
     async with httpx.AsyncClient(timeout=15) as client:
-        if _qbit_sid:
-            client.cookies.set("SID", _qbit_sid)
-
-        resp = await client.post(url, headers=headers, data=data)
-
-        if resp.status_code == 403:
-            sid = await _qbit_login(client)
-            if not sid:
-                return False
-            client.cookies.set("SID", sid)
-            resp = await client.post(url, headers=headers, data=data)
-
-        return resp.status_code == 200
+        resp = await client.get(
+            f"{_RADARR_URL}/api/v3{endpoint}",
+            params=params,
+            headers={"X-Api-Key": _RADARR_API_KEY},
+        )
+        resp.raise_for_status()
+        return resp.json()
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-def _human_size(nbytes: int) -> str:
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if abs(nbytes) < 1024:
-            return f"{nbytes:.1f} {unit}"
-        nbytes /= 1024  # type: ignore[assignment]
-    return f"{nbytes:.1f} PB"
+async def _radarr_post(endpoint: str, data: dict) -> dict:
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            f"{_RADARR_URL}/api/v3{endpoint}",
+            json=data,
+            headers={"X-Api-Key": _RADARR_API_KEY},
+        )
+        resp.raise_for_status()
+        return resp.json()
 
 
-# Need the import for _parse_torznab
-from xml.etree import ElementTree
+async def _radarr_add_movie(tmdb_id: int, title: str, year: int | None) -> dict | None:
+    """Add a movie to Radarr with automatic search. Returns movie dict or None."""
+    # Get quality profile
+    profiles = await _radarr_get("/qualityprofile")
+    profile_id = next(
+        (p["id"] for p in profiles if p["name"] == "HD-1080p"),
+        profiles[0]["id"] if profiles else 1,
+    )
+
+    payload = {
+        "tmdbId": tmdb_id,
+        "title": title,
+        "year": year or 0,
+        "rootFolderPath": _ROOT_FOLDER,
+        "qualityProfileId": profile_id,
+        "monitored": True,
+        "addOptions": {
+            "searchForMovie": True,
+        },
+    }
+
+    try:
+        return await _radarr_post("/movie", payload)
+    except httpx.HTTPStatusError as e:
+        # 400 typically means already added
+        if e.response.status_code == 400:
+            log.debug("Release Radar: %s already in Radarr", title)
+            return None
+        raise
+
+
+async def _radarr_has_movie(tmdb_id: int) -> bool:
+    """Check if a movie is already in Radarr."""
+    movies = await _radarr_get("/movie")
+    return any(m.get("tmdbId") == tmdb_id for m in movies)
 
 
 # ---------------------------------------------------------------------------
@@ -359,8 +240,8 @@ async def _run_check() -> list[dict]:
     if not _TMDB_API_KEY:
         log.warning("Release Radar: TMDB API key not configured")
         return []
-    if not _JACKETT_API_KEY:
-        log.warning("Release Radar: Jackett API key not configured")
+    if not _RADARR_API_KEY:
+        log.warning("Release Radar: Radarr API key not configured")
         return []
 
     db = _get_db()
@@ -378,10 +259,11 @@ async def _run_check() -> list[dict]:
     for movie in movies:
         tmdb_id = movie["id"]
         title = movie.get("title", "Unknown")
-        year = movie.get("release_date", "")[:4]
+        year_str = movie.get("release_date", "")[:4]
+        year = int(year_str) if year_str.isdigit() else None
         rating = movie.get("vote_average", 0)
 
-        # Skip if already grabbed
+        # Skip if already in our DB
         if db.has_movie(tmdb_id):
             continue
 
@@ -392,51 +274,39 @@ async def _run_check() -> list[dict]:
                 continue
         except Exception as e:
             log.debug("Release Radar: Provider check failed for %s: %s", title, e)
-            # Continue anyway — better to grab than skip on API error
 
-        # Search Jackett
-        search_query = f"{title} {year}" if year else title
+        # Check if already in Radarr
         try:
-            results = await _search_jackett(search_query)
+            if await _radarr_has_movie(tmdb_id):
+                log.debug("Release Radar: %s already in Radarr, recording", title)
+                db.add(tmdb_id=tmdb_id, title=title, year=year, rating=rating)
+                continue
         except Exception as e:
-            log.warning("Release Radar: Jackett search failed for %s: %s", title, e)
+            log.debug("Release Radar: Radarr check failed for %s: %s", title, e)
+
+        # Add to Radarr
+        try:
+            result = await _radarr_add_movie(tmdb_id, title, year)
+        except Exception as e:
+            log.warning("Release Radar: Radarr add failed for %s: %s", title, e)
             continue
 
-        if not results:
-            log.debug("Release Radar: No good results for %s", title)
-            continue
+        radarr_id = result.get("id") if result else None
+        log.info("Release Radar: Added %s to Radarr (id=%s)", title, radarr_id)
 
-        # Take the best result
-        best = results[0]
-        log.info(
-            "Release Radar: Grabbing %s — %s (%d seeds, score %d)",
-            title, best["title"], best["seeders"], _score_result(best["title"]),
+        db.add(
+            tmdb_id=tmdb_id,
+            title=title,
+            year=year,
+            rating=rating,
+            radarr_id=radarr_id,
         )
-
-        # Download
-        try:
-            ok = await _qbit_add(best["magnet"])
-        except Exception as e:
-            log.warning("Release Radar: qBit add failed for %s: %s", title, e)
-            continue
-
-        if ok:
-            db.add(
-                tmdb_id=tmdb_id,
-                title=title,
-                year=int(year) if year.isdigit() else None,
-                rating=rating,
-                info_hash=best.get("info_hash"),
-                torrent_name=best["title"],
-            )
-            grabbed.append({
-                "title": title,
-                "year": year,
-                "rating": rating,
-                "torrent": best["title"],
-                "size": best["size"],
-                "seeders": best["seeders"],
-            })
+        grabbed.append({
+            "title": title,
+            "year": year_str,
+            "rating": rating,
+            "radarr_id": radarr_id,
+        })
 
     return grabbed
 
@@ -445,16 +315,13 @@ async def _run_check() -> list[dict]:
 # Notification helper
 # ---------------------------------------------------------------------------
 async def _notify_grabs(grabbed: list[dict]) -> None:
-    """Send ntfy notification for grabbed movies."""
     if not grabbed:
         return
-
     try:
         from server import ntfy
-        lines = [f"Release Radar grabbed {len(grabbed)} movie(s):"]
+        lines = [f"Release Radar added {len(grabbed)} movie(s) to Radarr:"]
         for g in grabbed:
             lines.append(f"- {g['title']} ({g['year']}) [{g['rating']}/10]")
-
         await ntfy.push(
             title="Release Radar",
             body="\n".join(lines),
@@ -468,13 +335,11 @@ async def _notify_grabs(grabbed: list[dict]) -> None:
 # Heartbeat hook — daily check
 # ---------------------------------------------------------------------------
 async def _on_heartbeat(**kwargs) -> dict | None:
-    """Called every ~15 minutes by the heartbeat system. Runs check once daily."""
     global _last_check_date
 
     now = datetime.now()
     today = now.strftime("%Y-%m-%d")
 
-    # Only run once per day, at or after the configured hour
     if _last_check_date == today:
         return None
     if now.hour < _CHECK_HOUR:
@@ -486,10 +351,10 @@ async def _on_heartbeat(**kwargs) -> dict | None:
     try:
         grabbed = await _run_check()
         if grabbed:
-            log.info("Release Radar: Grabbed %d movies", len(grabbed))
+            log.info("Release Radar: Added %d movies to Radarr", len(grabbed))
             await _notify_grabs(grabbed)
         else:
-            log.info("Release Radar: No new movies to grab today")
+            log.info("Release Radar: No new movies to add today")
     except Exception as e:
         log.error("Release Radar: Daily check failed: %s", e)
 
@@ -500,9 +365,10 @@ async def _on_heartbeat(**kwargs) -> dict | None:
 # Tool handlers
 # ---------------------------------------------------------------------------
 async def _release_radar_check() -> str:
-    """Manually trigger a release radar check."""
     if not _TMDB_API_KEY:
-        return "Error: RELEASE_RADAR_TMDB_KEY not configured. Get a free API key at https://www.themoviedb.org/settings/api"
+        return "Error: RELEASE_RADAR_TMDB_KEY not configured."
+    if not _RADARR_API_KEY:
+        return "Error: HUNTER_RADARR_API_KEY not configured."
 
     try:
         grabbed = await _run_check()
@@ -510,14 +376,14 @@ async def _release_radar_check() -> str:
         return f"Error running release check: {e}"
 
     if not grabbed:
-        return "Release Radar: No new movies to grab. Either nothing new hit digital release, movies are on your streaming services (Disney+, Netflix, Hulu), or they've already been grabbed."
+        return ("Release Radar: No new movies to add. Either nothing new hit "
+                "digital release, movies are on your streaming services "
+                "(Disney+, Netflix, Hulu), or they're already in Radarr.")
 
-    lines = [f"Release Radar grabbed {len(grabbed)} movie(s):\n"]
+    lines = [f"Release Radar added {len(grabbed)} movie(s) to Radarr:\n"]
     for g in grabbed:
-        size = _human_size(g["size"]) if g["size"] else "unknown"
         lines.append(
-            f"- **{g['title']}** ({g['year']}) — {g['rating']}/10\n"
-            f"  {g['torrent']} | {size} | {g['seeders']} seeds"
+            f"- **{g['title']}** ({g['year']}) — {g['rating']}/10"
         )
 
     await _notify_grabs(grabbed)
@@ -525,18 +391,17 @@ async def _release_radar_check() -> str:
 
 
 async def _release_radar_history(limit: int = 30) -> str:
-    """Show movies grabbed by release radar."""
     db = _get_db()
     entries = db.list_recent(limit)
 
     if not entries:
         return "No release radar history yet."
 
-    lines = [f"Last {len(entries)} auto-grabbed movies:\n"]
+    lines = [f"Last {len(entries)} auto-added movies:\n"]
     for e in entries:
         grabbed = e["grabbed_at"][:10]
         year = e["year"] or "?"
-        lines.append(f"- {e['title']} ({year}) — {e['rating']}/10 — grabbed {grabbed}")
+        lines.append(f"- {e['title']} ({year}) — {e['rating']}/10 — added {grabbed}")
 
     return "\n".join(lines)
 
@@ -545,50 +410,42 @@ async def _release_radar_history(limit: int = 30) -> str:
 # Registration
 # ---------------------------------------------------------------------------
 def register(api: PluginAPI):
-    global _TMDB_API_KEY, _JACKETT_URL, _JACKETT_API_KEY
-    global _QBIT_URL, _QBIT_USER, _QBIT_PASS
-    global _MIN_RATING, _MIN_POPULARITY, _MIN_SEEDERS
-    global _LOOKBACK_DAYS, _CHECK_HOUR, _DATA_DIR
+    global _TMDB_API_KEY, _RADARR_URL, _RADARR_API_KEY
+    global _MIN_RATING, _MIN_POPULARITY
+    global _LOOKBACK_DAYS, _CHECK_HOUR, _DATA_DIR, _ROOT_FOLDER
 
     # TMDB
     _TMDB_API_KEY = (api.config.get("tmdb_api_key")
                      or os.environ.get("RELEASE_RADAR_TMDB_KEY", ""))
 
-    # Jackett (share config with hunter plugin)
-    _JACKETT_URL = (api.config.get("jackett_url")
-                    or os.environ.get("HUNTER_JACKETT_URL", _JACKETT_URL))
-    _JACKETT_API_KEY = (api.config.get("jackett_api_key")
-                        or os.environ.get("HUNTER_JACKETT_API_KEY", _JACKETT_API_KEY))
-
-    # qBittorrent (share config with hunter plugin)
-    _QBIT_URL = (api.config.get("qbit_url")
-                 or os.environ.get("HUNTER_QBIT_URL", _QBIT_URL))
-    _QBIT_USER = (api.config.get("qbit_user")
-                  or os.environ.get("HUNTER_QBIT_USER", _QBIT_USER))
-    _QBIT_PASS = (api.config.get("qbit_pass")
-                  or os.environ.get("HUNTER_QBIT_PASS", _QBIT_PASS))
+    # Radarr (shared with hunter plugin)
+    _RADARR_URL = (api.config.get("radarr_url")
+                   or os.environ.get("HUNTER_RADARR_URL", _RADARR_URL))
+    _RADARR_API_KEY = (api.config.get("radarr_api_key")
+                       or os.environ.get("HUNTER_RADARR_API_KEY", _RADARR_API_KEY))
 
     # Tuning
     _MIN_RATING = float(os.environ.get("RELEASE_RADAR_MIN_RATING", _MIN_RATING))
     _MIN_POPULARITY = float(os.environ.get("RELEASE_RADAR_MIN_POPULARITY", _MIN_POPULARITY))
-    _MIN_SEEDERS = int(os.environ.get("RELEASE_RADAR_MIN_SEEDERS", _MIN_SEEDERS))
     _LOOKBACK_DAYS = int(os.environ.get("RELEASE_RADAR_LOOKBACK_DAYS", _LOOKBACK_DAYS))
     _CHECK_HOUR = int(os.environ.get("RELEASE_RADAR_CHECK_HOUR", _CHECK_HOUR))
     _DATA_DIR = os.environ.get("RELEASE_RADAR_DATA_DIR", _DATA_DIR)
+    _ROOT_FOLDER = os.environ.get("RELEASE_RADAR_ROOT_FOLDER", _ROOT_FOLDER)
 
     if not _TMDB_API_KEY:
-        api.log("RELEASE_RADAR_TMDB_KEY not set — auto-check disabled. "
-                "Get a free key at https://www.themoviedb.org/settings/api",
+        api.log("RELEASE_RADAR_TMDB_KEY not set — auto-check disabled",
+                level="warning")
+    if not _RADARR_API_KEY:
+        api.log("HUNTER_RADARR_API_KEY not set — Radarr integration disabled",
                 level="warning")
 
     # -- release_radar_check --
     api.register_tool(
         name="release_radar_check",
         description=(
-            "Check for new movies that recently hit digital release (rental/purchase) "
-            "and are NOT on the user's streaming services (Disney+, Netflix, Hulu). "
-            "Automatically downloads the best available torrent for each qualifying movie. "
-            "Runs automatically once daily, but can be triggered manually."
+            "Check for new movies that recently hit digital release and are NOT "
+            "on the user's streaming services. Adds qualifying movies to Radarr "
+            "for automatic download. Runs automatically once daily."
         ),
         parameters={"type": "object", "properties": {}},
         handler=_release_radar_check,
@@ -599,8 +456,7 @@ def register(api: PluginAPI):
     api.register_tool(
         name="release_radar_history",
         description=(
-            "Show movies that were automatically grabbed by the release radar. "
-            "Displays title, year, rating, and when it was grabbed."
+            "Show movies that were automatically added to Radarr by the release radar."
         ),
         parameters={
             "type": "object",
